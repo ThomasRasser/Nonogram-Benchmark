@@ -1,0 +1,7 @@
+*~
+*.o
+*.pdf
+solver
+nonograms
+*.exe
+temp.sol

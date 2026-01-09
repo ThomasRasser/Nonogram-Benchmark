@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/a6290aa804eedf01237fc0ee153a073fbc2c432c
+
+There is a separate cellstack for each solve call now.

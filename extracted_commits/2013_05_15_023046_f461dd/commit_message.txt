@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/f461dd5d0eeb88ac8d592c095aa0846d8ec57c11
+
+Restructuring and organisation

@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/b3a2adcf515f446990eef1b3797023c4b7c55576
+
+Update solver.h

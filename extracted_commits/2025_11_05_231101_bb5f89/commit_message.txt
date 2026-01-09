@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/bb5f8964137f6e54b4944e7e584da7b3e01a24f6
+
+add link time optimization. reduces benchmark time by 300ms on my machine

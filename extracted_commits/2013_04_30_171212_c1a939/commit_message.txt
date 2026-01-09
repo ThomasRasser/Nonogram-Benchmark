@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/c1a939e636eb9ff74bad82873b29faaa23bec621
+
+Last attempt

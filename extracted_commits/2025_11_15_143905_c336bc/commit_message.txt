@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/c336bcbd41a75ef247bd6ba85c501708cf48ccc2
+
+check benchmark result

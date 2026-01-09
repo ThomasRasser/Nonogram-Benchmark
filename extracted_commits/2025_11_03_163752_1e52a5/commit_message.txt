@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/1e52a557c3d57d0a58e4bea7cac6d39e15a12411
+
+Revert "Delete README.md"
+
+This reverts commit e4719ead71cfd98df1e340d733716ed99f718d79.

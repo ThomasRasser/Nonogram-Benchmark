@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/cbfeb218bf7c74149dbad25b0363660390611e99
+
+In the progress of trading stacks for queues to simplify brute force

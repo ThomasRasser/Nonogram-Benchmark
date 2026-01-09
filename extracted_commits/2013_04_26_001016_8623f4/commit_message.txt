@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/8623f42d98194cb801c9e8834ad92f66f448b279
+
+Indentation corrections

@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/c45b19faf646853a1eec9878495eaaa8822d4958
+
+Organised presolver.c comments

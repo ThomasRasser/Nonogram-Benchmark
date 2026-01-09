@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/d3e08778b42518634ec424adcde8a148f5982949
+
+C Make CI

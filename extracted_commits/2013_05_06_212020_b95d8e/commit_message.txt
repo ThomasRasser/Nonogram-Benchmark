@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/b95d8ee293865e12679fa551d51b9f165c52a603
+
+Solver now detects implicit blanks after last block of line, and some mergings of # clusters that must belong to the same block

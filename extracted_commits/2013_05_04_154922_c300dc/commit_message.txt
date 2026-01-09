@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/c300dc4aad1f7706c00f389c65755ae5c9375b4f
+
+Fixed problem with stackline failing on most blocks after the 1st

@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/f3d95f773d74f4a6f2965eb62b47502703865df1
+
+Merge pull request #1 from schicho/ci
+
+make CI

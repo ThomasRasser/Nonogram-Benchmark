@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/ad41b33657e6c0b5c7fbf66bffd687aba1e2bea1
+
+no binaries on git please

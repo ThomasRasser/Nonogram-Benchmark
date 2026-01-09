@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/e2d7f18cbca27228fce528f294c716e655608d4a
+
+A lot of developments, semi-solving puzzles, but often wrong because of fundamental problem with stackline. Got some thinking to do

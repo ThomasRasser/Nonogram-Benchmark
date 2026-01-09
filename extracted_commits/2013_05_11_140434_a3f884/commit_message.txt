@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/a3f88430ec1de740936f11018af41afb08439451
+
+more mem leak fix
