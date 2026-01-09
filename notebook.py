@@ -26,12 +26,55 @@ def _():
     import sqlite3
     import time
     import re
+    import sys
     from pathlib import Path
     from datetime import datetime
     import pandas as pd
     import plotly.express as px
     import matplotlib.pyplot as plt
-    return Path, datetime, pd, plt, re, sqlite3, subprocess
+    return Path, datetime, pd, plt, re, sqlite3, subprocess, sys
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Extract Commits
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    run_extract = mo.ui.run_button(label="Extract commits")
+    run_extract
+    return (run_extract,)
+
+
+@app.cell(hide_code=True)
+def _(Path, mo, run_extract, subprocess, sys):
+    GITHUB_URL = "https://github.com/schicho/nonogram-solver/"
+    COMMIT_DIR = "./extracted_commits"
+
+    if run_extract.value:
+        script = Path("./commit_extractor.py")
+        cmd = [
+            sys.executable,
+            str(script),
+            GITHUB_URL,
+            COMMIT_DIR,
+            "--overwrite",  # overwrite existing files and folders
+        ] 
+        with mo.redirect_stdout():
+            print("Running commit_extractor.py ...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        with mo.redirect_stdout():
+            print("STDOUT:")
+            print(result.stdout)
+            print("----------------------------------------------------")
+            print("STDERR:")
+            print(result.stderr)
+    return
 
 
 @app.cell(hide_code=True)
@@ -49,23 +92,35 @@ def _(mo):
         label="Commits Folder",
         full_width=True,
     )
+
     puzzles_folder_input = mo.ui.text(
         value="./puzzles/island_fast",
         label="Puzzles Folder",
         full_width=True,
     )
+
     db_path_input = mo.ui.text(
         value="./benchmark_results.db",
         label="Database Path",
         full_width=True,
     )
+    use_in_memory_input = mo.ui.switch(
+            value=False,
+            label="Store results in memory (no DB)",
+        )
 
     mo.vstack([
         commits_folder_input,
         puzzles_folder_input,
         db_path_input,
+        use_in_memory_input,
     ])
-    return commits_folder_input, db_path_input, puzzles_folder_input
+    return (
+        commits_folder_input,
+        db_path_input,
+        puzzles_folder_input,
+        use_in_memory_input,
+    )
 
 
 @app.cell(hide_code=True)
@@ -290,7 +345,15 @@ def _(subprocess):
 
 
 @app.cell(hide_code=True)
-def _(Path, check_commit_folder, commits_folder_input, mo, parse_commit_info):
+def _(
+    Path,
+    check_commit_folder,
+    commits_folder_input,
+    hide_2013_input,
+    hide_invalid_input,
+    mo,
+    parse_commit_info,
+):
     def get_available_commits():
         commits_path = Path(commits_folder_input.value)
         if not commits_path.exists():
@@ -310,9 +373,20 @@ def _(Path, check_commit_folder, commits_folder_input, mo, parse_commit_info):
         return commits
 
     available_commits = get_available_commits()
+
+    shown_commits = available_commits
+
+    # hide invalid
+    if hide_invalid_input.value:
+        shown_commits = [c for c in shown_commits if c["valid"]]
+
+    # hide folders starting with 2013
+    if hide_2013_input.value:
+        shown_commits = [c for c in shown_commits if not c["folder"].startswith("2013")]
+
     commit_options = {
         f"{c['folder']} {'🟩' if c['valid'] else '🟥'}": c['folder']
-        for c in available_commits
+        for c in shown_commits
     }
 
     commit_selector = mo.ui.multiselect(
@@ -326,7 +400,20 @@ def _(Path, check_commit_folder, commits_folder_input, mo, parse_commit_info):
     return (commit_selector,)
 
 
-@app.cell
+@app.cell(hide_code=True)
+def _(mo):
+    # flags (place above where you build commit_options)
+    HIDE_INVALID = True
+    HIDE_2013 = True
+
+    hide_invalid_input = mo.ui.switch(value=HIDE_INVALID, label="Hide invalid")
+    hide_2013_input = mo.ui.switch(value=HIDE_2013, label="Hide 2013")
+
+    mo.hstack([hide_invalid_input, hide_2013_input], justify="start")
+    return hide_2013_input, hide_invalid_input
+
+
+@app.cell(hide_code=True)
 def _(commit_selector):
     commit_selector
     return
@@ -447,12 +534,12 @@ def _(filtered_puzzles):
 @app.cell
 def _(commit_selector, filtered_puzzles, mo, repetitions_input):
     _num_runs = len(commit_selector.value) * len(filtered_puzzles) * repetitions_input.value
-    run_button = mo.ui.run_button(label=f"Run Benchmark on {_num_runs} runs")
+    run_button = mo.ui.run_button(label=f"Run Benchmark on {_num_runs:,} runs")
     run_button
     return (run_button,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     Path,
     available_puzzles,
@@ -467,106 +554,148 @@ def _(
     filtered_puzzles,
     init_database,
     ldflags_input,
+    mo,
     parse_commit_info,
     puzzles_folder_input,
     repetitions_input,
     run_benchmark,
     run_button,
+    use_in_memory_input,
 ):
-    DEBUG = True
+    DEBUG = False
+    use_db = not use_in_memory_input.value
 
     benchmark_results = []
     if run_button.value and commit_selector.value and filtered_puzzles:
         import time as bench_time
+
         total_start = bench_time.perf_counter()
-    
-        conn = init_database(db_path_input.value)
+
+        conn = init_database(db_path_input.value) if use_db else None
+
         commits_path = Path(commits_folder_input.value)
         puzzles_path = Path(puzzles_folder_input.value)
-    
-        for folder_name in commit_selector.value:
-            commit_start = bench_time.perf_counter()
-            commit_path = commits_path / folder_name
-            is_valid, missing = check_commit_folder(commit_path)
-            if not is_valid:
+
+        total_steps = len(commit_selector.value) * len(filtered_puzzles)
+
+        with mo.status.progress_bar(total=total_steps, title="Benchmarking") as bar:
+            for folder_name in commit_selector.value:
+                commit_start = bench_time.perf_counter()
+                commit_path = commits_path / folder_name
+
+                is_valid, missing = check_commit_folder(commit_path)
+                if not is_valid:
+                    if DEBUG:
+                        print(f"[DEBUG] Skipping {folder_name}: missing {missing}")
+                    bar.update(increment=len(filtered_puzzles), subtitle=f"Skipping {folder_name}")
+                    continue
+
+                info = parse_commit_info(commit_path)
+
+                if use_db:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO commits (commit_hash, commit_date, commit_message, commit_url)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (info["hash"], info["date"], info["message"], info["url"]),
+                    )
+
+                compile_start = bench_time.perf_counter()
+                success, msg = compile_solver(
+                    commit_path,
+                    compiler_input.value,
+                    cflags_input.value,
+                    ldflags_input.value,
+                )
                 if DEBUG:
-                    print(f"[DEBUG] Skipping {folder_name}: missing {missing}")
-                continue
-            info = parse_commit_info(commit_path)
-            conn.execute("""
-                INSERT OR REPLACE INTO commits (commit_hash, commit_date, commit_message, commit_url)
-                VALUES (?, ?, ?, ?)
-            """, (info["hash"], info["date"], info["message"], info["url"]))
-        
-            compile_start = bench_time.perf_counter()
-            success, msg = compile_solver(
-                commit_path,
-                compiler_input.value,
-                cflags_input.value,
-                ldflags_input.value,
-            )
-            if DEBUG:
-                print(f"[DEBUG] Compile {folder_name}: {bench_time.perf_counter() - compile_start:.2f}s")
-        
-            if not success:
+                    print(f"[DEBUG] Compile {folder_name}: {bench_time.perf_counter() - compile_start:.2f}s")
+
+                if not success:
+                    if DEBUG:
+                        print(f"[DEBUG] Compilation failed: {msg}")
+                    bar.update(increment=len(filtered_puzzles), subtitle=f"Compile failed: {folder_name}")
+                    continue
+
+                executable = str(commit_path / "nonograms")
+                runs_to_insert = []  # stays empty/unused when use_db=False
+
+                for puzzle_file in filtered_puzzles:
+                    puzzle_start = bench_time.perf_counter()
+                    puzzle_path = puzzles_path / puzzle_file
+                    puzzle_info = next((p for p in available_puzzles if p["file"] == puzzle_file), {})
+
+                    bar.update(increment=0, subtitle=f"{folder_name} · {puzzle_file}")
+
+                    metrics_list = run_benchmark(executable, str(puzzle_path), repetitions_input.value)
+
+                    for rep, metrics in enumerate(metrics_list, 1):
+                        if "error" in metrics:
+                            if DEBUG:
+                                print(f"[DEBUG] Error {puzzle_file} rep {rep}: {metrics['error']}")
+                            continue
+
+                        if use_db:
+                            runs_to_insert.append(
+                                (
+                                    info["hash"],
+                                    puzzle_file,
+                                    puzzle_info.get("size", "unknown"),
+                                    puzzle_info.get("density", 0),
+                                    puzzle_info.get("id", 0),
+                                    rep,
+                                    metrics["time_ns"],
+                                    metrics["time_ms"],
+                                    datetime.now().isoformat(),
+                                )
+                            )
+
+                        benchmark_results.append(
+                            {
+                                "commit": folder_name,
+                                "commit_hash": info["hash"][:8],
+                                "puzzle": puzzle_file,
+                                "size": puzzle_info.get("size", "unknown"),
+                                "density": puzzle_info.get("density", 0),
+                                "rep": rep,
+                                "time_ms": metrics["time_ms"],
+                            }
+                        )
+
+                    if DEBUG:
+                        print(
+                            f"[DEBUG] {puzzle_file} ({repetitions_input.value} reps): "
+                            f"{bench_time.perf_counter() - puzzle_start:.2f}s"
+                        )
+
+                    bar.update(increment=1, subtitle=f"{folder_name} · {puzzle_file}")
+
+                if use_db and runs_to_insert:
+                    db_start = bench_time.perf_counter()
+                    conn.executemany(
+                        """
+                        INSERT INTO runs (
+                            commit_hash, puzzle_name, puzzle_size, puzzle_density, puzzle_id,
+                            repetition, time_ns, time_ms, timestamp
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        runs_to_insert,
+                    )
+                    conn.commit()
+                    if DEBUG:
+                        print(
+                            f"[DEBUG] DB insert ({len(runs_to_insert)} rows): "
+                            f"{bench_time.perf_counter() - db_start:.3f}s"
+                        )
+
                 if DEBUG:
-                    print(f"[DEBUG] Compilation failed: {msg}")
-                continue
-        
-            executable = str(commit_path / "nonograms")
-            runs_to_insert = []
-        
-            for puzzle_file in filtered_puzzles:
-                puzzle_start = bench_time.perf_counter()
-                puzzle_path = puzzles_path / puzzle_file
-                puzzle_info = next((p for p in available_puzzles if p["file"] == puzzle_file), {})
-            
-                metrics_list = run_benchmark(executable, str(puzzle_path), repetitions_input.value)
-            
-                for rep, metrics in enumerate(metrics_list, 1):
-                    if "error" in metrics:
-                        if DEBUG:
-                            print(f"[DEBUG] Error {puzzle_file} rep {rep}: {metrics['error']}")
-                        continue
-                
-                    runs_to_insert.append((
-                        info["hash"],
-                        puzzle_file,
-                        puzzle_info.get("size", "unknown"),
-                        puzzle_info.get("density", 0),
-                        puzzle_info.get("id", 0),
-                        rep,
-                        metrics["time_ns"],
-                        metrics["time_ms"],
-                        datetime.now().isoformat(),
-                    ))
-                
-                    benchmark_results.append({
-                        "commit": folder_name,
-                        "commit_hash": info["hash"][:8],
-                        "puzzle": puzzle_file,
-                        "size": puzzle_info.get("size", "unknown"),
-                        "density": puzzle_info.get("density", 0),
-                        "rep": rep,
-                        "time_ms": metrics["time_ms"],
-                    })
-            
-                if DEBUG:
-                    print(f"[DEBUG] {puzzle_file} ({repetitions_input.value} reps): {bench_time.perf_counter() - puzzle_start:.2f}s")
-        
-            db_start = bench_time.perf_counter()
-            conn.executemany("""
-                INSERT INTO runs (
-                    commit_hash, puzzle_name, puzzle_size, puzzle_density, puzzle_id,
-                    repetition, time_ns, time_ms, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, runs_to_insert)
-            conn.commit()
-            if DEBUG:
-                print(f"[DEBUG] DB insert ({len(runs_to_insert)} rows): {bench_time.perf_counter() - db_start:.3f}s")
-                print(f"[DEBUG] Commit {folder_name} total: {bench_time.perf_counter() - commit_start:.2f}s")
-    
-        conn.close()
+                    print(f"[DEBUG] Commit {folder_name} total: {bench_time.perf_counter() - commit_start:.2f}s")
+
+            bar.update(increment=0, subtitle="Done")
+
+        if conn is not None:
+            conn.close()
+
         if DEBUG:
             print(f"[DEBUG] Total: {bench_time.perf_counter() - total_start:.2f}s")
     return (benchmark_results,)
@@ -580,7 +709,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(benchmark_results, mo, pd):
     df_benchmark_results = pd.DataFrame(benchmark_results)
     mo.ui.table(df_benchmark_results) if benchmark_results else mo.md("No benchmark results to display.")
@@ -595,7 +724,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(benchmark_results, mo, pd, plt):
     if benchmark_results:
         df = pd.DataFrame(benchmark_results)
