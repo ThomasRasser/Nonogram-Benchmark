@@ -1,0 +1,1147 @@
+import marimo
+
+__generated_with = "0.19.0"
+app = marimo.App(width="medium")
+
+
+@app.cell(hide_code=True)
+def _():
+    import marimo as mo
+    return (mo,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    # Nonogram Solver Benchmarker
+
+    Benchmark different commits of the nonogram solver across puzzles.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    import subprocess
+    import sqlite3
+    import json
+    import re
+    import sys
+    from pathlib import Path
+    from datetime import datetime
+    import pandas as pd
+    import plotly.express as px
+    import matplotlib.pyplot as plt
+    return Path, datetime, json, pd, plt, re, sqlite3, subprocess, sys
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Extract Commits
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    run_extract = mo.ui.run_button(label="Extract commits")
+    run_extract
+    return (run_extract,)
+
+
+@app.cell(hide_code=True)
+def _(Path, mo, run_extract, subprocess, sys):
+    GITHUB_URL = "https://github.com/schicho/nonogram-solver/"
+    COMMIT_DIR = "./extracted_commits"
+
+    if run_extract.value:
+        script = Path("./commit_extractor.py")
+        cmd = [
+            sys.executable,
+            str(script),
+            GITHUB_URL,
+            COMMIT_DIR,
+            # "--overwrite",  # Don't overwrite, since I added the -b flag to older commits by hand
+        ] 
+        with mo.redirect_stdout():
+            print("Running commit_extractor.py ...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        with mo.redirect_stdout():
+            print("STDOUT:")
+            print(result.stdout)
+            print("----------------------------------------------------")
+            print("STDERR:")
+            print(result.stderr)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## Configuration
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    commits_folder_input = mo.ui.text(
+        value="./extracted_commits",
+        label="Commits Folder",
+        full_width=True,
+    )
+
+    puzzles_folder_input = mo.ui.text(
+        value="./puzzles/island",
+        label="Puzzles Folder",
+        full_width=True,
+    )
+
+    db_path_input = mo.ui.text(
+        value="./benchmark_results.db",
+        label="Database Path",
+        full_width=True,
+    )
+
+    mo.vstack([
+        commits_folder_input,
+        puzzles_folder_input,
+        db_path_input,
+    ])
+    return commits_folder_input, db_path_input, puzzles_folder_input
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    compiler_input = mo.ui.text(
+        value="gcc",
+        label="Compiler",
+        full_width=True,
+    )
+    cflags_input = mo.ui.text(
+        value="-Wall -pedantic -std=c99 -O2 -flto=auto",
+        label="CFLAGS",
+        full_width=True,
+    )
+    ldflags_input = mo.ui.text(
+        value="-flto=auto",
+        label="LDFLAGS (for linking)",
+        full_width=True,
+    )
+
+    mo.vstack([compiler_input, cflags_input, ldflags_input])
+    return cflags_input, compiler_input, ldflags_input
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    repetitions_input = mo.ui.slider(
+        start=1,
+        stop=100,
+        value=10,
+        label="Repetitions per puzzle (hyperfine runs)",
+        show_value=True,
+    )
+    warmup_input = mo.ui.slider(
+        start=0,
+        stop=10,
+        value=3,
+        label="Warmup runs (hyperfine --warmup)",
+        show_value=True,
+    )
+    mo.vstack([repetitions_input, warmup_input])
+    return repetitions_input, warmup_input
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    benchmark_name_input = mo.ui.text(
+        value="",
+        label="Benchmark Run Name (optional)",
+        placeholder="e.g., 'baseline', 'after-optimization', 'gcc-vs-clang'",
+        full_width=True,
+    )
+    benchmark_name_input
+    return (benchmark_name_input,)
+
+
+@app.cell(hide_code=True)
+def _(sqlite3):
+    def init_database(db_path: str) -> sqlite3.Connection:
+        """Initialize the SQLite database with required tables."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS commits (
+                commit_hash TEXT PRIMARY KEY,
+                commit_date TEXT,
+                commit_message TEXT,
+                commit_url TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS benchmark_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                timestamp TEXT,
+                compiler TEXT,
+                cflags TEXT,
+                ldflags TEXT,
+                repetitions INTEGER,
+                warmup INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                benchmark_run_id INTEGER,
+                commit_hash TEXT,
+                puzzle_name TEXT,
+                puzzle_size TEXT,
+                puzzle_density INTEGER,
+                puzzle_id INTEGER,
+                repetition INTEGER,
+                time_ns INTEGER,
+                time_ms REAL,
+                mean_ms REAL,
+                stddev_ms REAL,
+                median_ms REAL,
+                min_ms REAL,
+                max_ms REAL,
+                user_ms REAL,
+                system_ms REAL,
+                timestamp TEXT,
+                FOREIGN KEY (benchmark_run_id) REFERENCES benchmark_runs(id),
+                FOREIGN KEY (commit_hash) REFERENCES commits(commit_hash)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_runs_commit ON runs(commit_hash)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_runs_puzzle ON runs(puzzle_name)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_runs_benchmark ON runs(benchmark_run_id)
+        """)
+        conn.commit()
+        return conn
+
+    def create_benchmark_run(
+        conn: sqlite3.Connection,
+        name: str,
+        compiler: str,
+        cflags: str,
+        ldflags: str,
+        repetitions: int,
+        warmup: int,
+    ) -> int:
+        """Create a new benchmark run and return its ID."""
+        from datetime import datetime
+
+        cursor = conn.execute(
+            """
+            INSERT INTO benchmark_runs (name, timestamp, compiler, cflags, ldflags, repetitions, warmup)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                datetime.now().isoformat(),
+                compiler,
+                cflags,
+                ldflags,
+                repetitions,
+                warmup,
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+    def get_benchmark_runs(db_path: str) -> list[dict]:
+        """Get all benchmark runs from the database."""
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT br.*, COUNT(r.id) as run_count
+                FROM benchmark_runs br
+                LEFT JOIN runs r ON br.id = r.benchmark_run_id
+                GROUP BY br.id
+                ORDER BY br.timestamp DESC
+            """)
+            runs = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return runs
+        except Exception:
+            return []
+
+    def delete_benchmark_run(db_path: str, run_id: int) -> bool:
+        """Delete a benchmark run and all its associated data."""
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "DELETE FROM runs WHERE benchmark_run_id = ?", (run_id,)
+            )
+            conn.execute("DELETE FROM benchmark_runs WHERE id = ?", (run_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception:
+            return False
+    return (
+        create_benchmark_run,
+        delete_benchmark_run,
+        get_benchmark_runs,
+        init_database,
+    )
+
+
+@app.cell(hide_code=True)
+def _(Path, re):
+    def parse_puzzle_filename(filename: str) -> dict:
+        """Parse puzzle filename like rand_5x5_d8_20.cfg"""
+        name = Path(filename).stem
+
+        # Try to parse the format: name_SIZExSIZE_dDENSITY_ID
+        pattern = r"^(.+?)_(\d+x\d+)_d(\d+)_(\d+)$"
+        match = re.match(pattern, name)
+
+        if match:
+            return {
+                "name": match.group(1),
+                "size": match.group(2),
+                "density": int(match.group(3)),
+                "id": int(match.group(4)),
+            }
+        else:
+            return {
+                "name": name,
+                "size": "unknown",
+                "density": 0,
+                "id": 0,
+            }
+    return (parse_puzzle_filename,)
+
+
+@app.cell(hide_code=True)
+def _(Path, subprocess):
+    REQUIRED_FILES = [
+        "solver.c",
+        "solver.h",
+        "stacks.c",
+        "stacks.h",
+        "solverio.c",
+        "presolver.c",
+        "stocks.c",
+    ]
+
+    def check_commit_folder(commit_path: Path) -> tuple[bool, list[str]]:
+        """Check if a commit folder has all required files."""
+        missing = []
+        for f in REQUIRED_FILES:
+            if not (commit_path / f).exists():
+                missing.append(f)
+        return len(missing) == 0, missing
+
+    def compile_solver(commit_path: Path, compiler: str, cflags: str, ldflags: str) -> tuple[bool, str]:
+        """Compile the nonogram solver in the given commit folder."""
+        sources = ["solver.c", "stacks.c", "solverio.c", "presolver.c", "stocks.c"]
+        objects = []
+
+        for src in sources:
+            obj = src.replace(".c", ".o")
+            objects.append(obj)
+            cmd = f"{compiler} {cflags} -c {src} -o {obj}"
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=commit_path,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                return False, f"Failed to compile {src}: {result.stderr}"
+
+        obj_str = " ".join(objects)
+        cmd = f"{compiler} {ldflags} -o nonograms {obj_str}"
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=commit_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False, f"Failed to link: {result.stderr}"
+
+        return True, "Compilation successful"
+
+    def parse_commit_info(commit_path: Path) -> dict:
+        """Parse commit_message.txt to extract commit info."""
+        info_file = commit_path / "commit_message.txt"
+        if not info_file.exists():
+            folder_name = commit_path.name
+            parts = folder_name.split("_")
+            if len(parts) >= 5:
+                return {
+                    "hash": parts[4] if len(parts) > 4 else folder_name,
+                    "date": f"{parts[0]}-{parts[1]}-{parts[2]} {parts[3][:2]}:{parts[3][2:]}" if len(parts) >= 4 else "",
+                    "message": "",
+                    "url": "",
+                }
+            return {"hash": folder_name, "date": "", "message": "", "url": ""}
+
+        content = info_file.read_text()
+        lines = content.strip().split("\n")
+
+        url = lines[0] if lines else ""
+        message = "\n".join(lines[2:]) if len(lines) > 2 else ""
+
+        hash_match = url.split("/commit/")[-1] if "/commit/" in url else ""
+
+        folder_name = commit_path.name
+        parts = folder_name.split("_")
+        date = f"{parts[0]}-{parts[1]}-{parts[2]} {parts[3][:2]}:{parts[3][2:]}" if len(parts) >= 5 else ""
+
+        return {
+            "hash": hash_match,
+            "date": date,
+            "message": message,
+            "url": url,
+        }
+    return check_commit_folder, compile_solver, parse_commit_info
+
+
+@app.cell(hide_code=True)
+def _(json, subprocess):
+    def run_benchmark_batch(
+        executable: str,
+        puzzle_paths: list[str],
+        repetitions: int = 10,
+        warmup: int = 3,
+    ) -> dict[str, dict]:
+        """Run benchmark using hyperfine for multiple puzzles in one call.
+
+        Returns a dict mapping puzzle_path -> {
+            "times": [...],  # individual run times in ms
+            "mean": float,   # mean time in ms
+            "stddev": float, # standard deviation in ms
+            "median": float, # median time in ms
+            "min": float,    # min time in ms
+            "max": float,    # max time in ms
+            "user": float,   # user CPU time in ms
+            "system": float, # system CPU time in ms
+        }
+        """
+        if not puzzle_paths:
+            return {}
+
+        commands = [f"{executable} {p}" for p in puzzle_paths]
+
+        cmd = [
+            "hyperfine",
+            "--runs",
+            str(repetitions),
+            "--warmup",
+            str(warmup),
+            "--export-json",
+            "/dev/stdout",
+            "--style",
+            "none",
+            *commands,
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            return {
+                p: {"error": f"Hyperfine failed: {result.stderr}"}
+                for p in puzzle_paths
+            }
+
+        # Find the last complete JSON object (hyperfine prints incrementally)
+        stdout = result.stdout.strip()
+        last_json_start = stdout.rfind('{\n  "results":')
+        if last_json_start == -1:
+            return {
+                p: {"error": "No JSON found in hyperfine output"}
+                for p in puzzle_paths
+            }
+
+        json_str = stdout[last_json_start:]
+
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            return {
+                p: {"error": f"Failed to parse hyperfine JSON: {e}"}
+                for p in puzzle_paths
+            }
+
+        results = {}
+        for i, benchmark in enumerate(data.get("results", [])):
+            puzzle_path = (
+                puzzle_paths[i] if i < len(puzzle_paths) else f"unknown_{i}"
+            )
+
+            times_s = benchmark.get("times", [])
+            times_ms = [t * 1000 for t in times_s]
+
+            results[puzzle_path] = {
+                "times": times_ms,
+                "mean": benchmark.get("mean", 0) * 1000,
+                "stddev": benchmark.get("stddev", 0) * 1000,
+                "median": benchmark.get("median", 0) * 1000,
+                "min": benchmark.get("min", 0) * 1000,
+                "max": benchmark.get("max", 0) * 1000,
+                "user": benchmark.get("user", 0) * 1000,
+                "system": benchmark.get("system", 0) * 1000,
+            }
+
+        return results
+    return (run_benchmark_batch,)
+
+
+@app.cell(hide_code=True)
+def _(
+    Path,
+    check_commit_folder,
+    commits_folder_input,
+    hide_2013_input,
+    hide_invalid_input,
+    mo,
+    parse_commit_info,
+):
+    def get_available_commits():
+        commits_path = Path(commits_folder_input.value)
+        if not commits_path.exists():
+            return []
+        commits = []
+        for folder in sorted(commits_path.iterdir()):
+            if folder.is_dir() and not folder.name.startswith("."):
+                is_valid, missing = check_commit_folder(folder)
+                info = parse_commit_info(folder)
+                commits.append({
+                    "folder": folder.name,
+                    "path": folder,
+                    "valid": is_valid,
+                    "missing": missing,
+                    "info": info,
+                })
+        return commits
+
+    available_commits = get_available_commits()
+
+    shown_commits = available_commits
+
+    # hide invalid
+    if hide_invalid_input.value:
+        shown_commits = [c for c in shown_commits if c["valid"]]
+
+    # hide folders starting with 2013
+    if hide_2013_input.value:
+        shown_commits = [c for c in shown_commits if not c["folder"].startswith("2013")]
+
+    commit_options = {
+        f"{c['folder']} {'🟩' if c['valid'] else '🟥'}": c['folder']
+        for c in shown_commits
+    }
+
+    commit_selector = mo.ui.multiselect(
+        options=commit_options,
+        label="Select Commits to Benchmark",
+        value=[list(commit_options.keys())[-1]] if commit_options else [],
+        full_width=True,
+    )
+
+    mo.md("## Select Commits\n\n🟩 Valid  🟥 Missing files") if available_commits else mo.md("## Select Commits\n\n⚠️ No commits found.")
+    return commit_selector, shown_commits
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    # flags (place above where you build commit_options)
+    HIDE_INVALID = True
+    HIDE_2013 = True
+
+    hide_invalid_input = mo.ui.switch(value=HIDE_INVALID, label="Hide invalid")
+    hide_2013_input = mo.ui.switch(value=HIDE_2013, label="Hide 2013")
+
+    mo.hstack([hide_invalid_input, hide_2013_input], justify="start")
+    return hide_2013_input, hide_invalid_input
+
+
+@app.cell(hide_code=True)
+def _(commit_selector):
+    commit_selector
+    return
+
+
+@app.cell(hide_code=True)
+def _(Path, mo, parse_puzzle_filename, puzzles_folder_input):
+    def get_available_puzzles():
+        puzzles_path = Path(puzzles_folder_input.value)
+        if not puzzles_path.exists():
+            return []
+
+        puzzles = []
+        for f in sorted(puzzles_path.glob("*.cfg")):
+            info = parse_puzzle_filename(f.name)
+            puzzles.append({
+                "file": f.name,
+                "path": f,
+                **info,
+            })
+        return puzzles
+
+    available_puzzles = get_available_puzzles()
+    puzzle_options = {p["file"]: p["file"] for p in available_puzzles}
+
+    puzzle_selector = mo.ui.multiselect(
+        options=puzzle_options,
+        label="Select Puzzles",
+        value=list(puzzle_options.values())[:5] if puzzle_options else [],
+        full_width=True,
+    )
+
+    mo.md("## Select Puzzles") if available_puzzles else mo.md("## Select Puzzles\n\n⚠️ No puzzles found.")
+    return (available_puzzles,)
+
+
+@app.cell(hide_code=True)
+def _(available_puzzles, mo):
+    unique_names = sorted(set(p["name"] for p in available_puzzles))
+    unique_sizes = sorted(set(p["size"] for p in available_puzzles))
+    unique_densities = sorted(set(p["density"] for p in available_puzzles))
+    unique_ids = sorted(set(p["id"] for p in available_puzzles))
+
+    name_filter = mo.ui.multiselect(
+        options={n: n for n in unique_names},
+        value=unique_names,
+        label="Name",
+    )
+    size_filter = mo.ui.multiselect(
+        options={s: s for s in unique_sizes},
+        value=unique_sizes,
+        label="Size",
+    )
+    density_filter = mo.ui.multiselect(
+        options={str(d): d for d in unique_densities},
+        value=[str(d) for d in unique_densities],
+        label="Density",
+    )
+    id_filter = mo.ui.multiselect(
+        options={str(i): i for i in unique_ids},
+        value=[str(i) for i in unique_ids],
+        label="ID",
+    )
+
+    mo.hstack([name_filter, size_filter, density_filter, id_filter])
+    return density_filter, id_filter, name_filter, size_filter
+
+
+@app.cell(hide_code=True)
+def _(
+    available_puzzles,
+    density_filter,
+    id_filter,
+    mo,
+    name_filter,
+    size_filter,
+):
+    filtered_puzzles = [
+        p["file"] for p in available_puzzles
+        if p["name"] in name_filter.value
+        and p["size"] in size_filter.value
+        and p["density"] in density_filter.value
+        and p["id"] in id_filter.value
+    ]
+
+    mo.md(f"**{len(filtered_puzzles)} puzzles** match the filter")
+    return (filtered_puzzles,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## Run Benchmark
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Summary
+    """)
+    return
+
+
+@app.cell
+def _(commit_selector, filtered_puzzles, mo):
+    mo.hstack([mo.vstack(["Commits", commit_selector.value]), mo.vstack(["Puzzles", filtered_puzzles])])
+    return
+
+
+@app.cell(hide_code=True)
+def _(commit_selector, filtered_puzzles, mo, repetitions_input, warmup_input):
+    _num_runs = len(commit_selector.value) * len(filtered_puzzles) * repetitions_input.value
+    _num_runs += warmup_input.value * len(commit_selector.value) * len(filtered_puzzles)
+    run_button = mo.ui.run_button(label=f"Run Benchmark on {_num_runs:,} runs")
+    store_in_db_input = mo.ui.switch(
+        value=True,
+        label="Store in DB",
+    )
+    mo.hstack([run_button, store_in_db_input], justify="start", gap=2)
+    return run_button, store_in_db_input
+
+
+@app.cell(hide_code=True)
+def _(
+    Path,
+    available_puzzles,
+    benchmark_name_input,
+    cflags_input,
+    check_commit_folder,
+    commit_selector,
+    commits_folder_input,
+    compile_solver,
+    compiler_input,
+    create_benchmark_run,
+    datetime,
+    db_path_input,
+    filtered_puzzles,
+    init_database,
+    ldflags_input,
+    mo,
+    parse_commit_info,
+    puzzles_folder_input,
+    repetitions_input,
+    run_benchmark_batch,
+    run_button,
+    store_in_db_input,
+    warmup_input,
+):
+    DEBUG = True
+    use_db = store_in_db_input.value
+
+    benchmark_results = []
+    current_benchmark_run_id = None
+
+    if run_button.value and commit_selector.value and filtered_puzzles:
+        import time as bench_time
+
+        total_start = bench_time.perf_counter()
+
+        conn = None
+        try:
+            conn = init_database(db_path_input.value) if use_db else None
+            if conn:
+                conn.execute("PRAGMA busy_timeout = 5000")
+
+            # Create a new benchmark run entry
+            if use_db:
+                run_name = benchmark_name_input.value.strip() or f"Run {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                current_benchmark_run_id = create_benchmark_run(
+                    conn,
+                    run_name,
+                    compiler_input.value,
+                    cflags_input.value,
+                    ldflags_input.value,
+                    repetitions_input.value,
+                    warmup_input.value,
+                )
+
+            commits_path = Path(commits_folder_input.value)
+            puzzles_path = Path(puzzles_folder_input.value)
+
+            total_commits = len(commit_selector.value)
+
+            with mo.status.progress_bar(total=total_commits, title="Benchmarking") as bar:
+                for folder_name in commit_selector.value:
+                    commit_start = bench_time.perf_counter()
+                    commit_path = commits_path / folder_name
+
+                    is_valid, missing = check_commit_folder(commit_path)
+                    if not is_valid:
+                        if DEBUG:
+                            print(f"[DEBUG] Skipping {folder_name}: missing {missing}")
+                        bar.update(increment=1, subtitle=f"Skipping {folder_name}")
+                        continue
+
+                    info = parse_commit_info(commit_path)
+
+                    if use_db:
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO commits (commit_hash, commit_date, commit_message, commit_url)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (info["hash"], info["date"], info["message"], info["url"]),
+                        )
+
+                    compile_start = bench_time.perf_counter()
+                    success, msg = compile_solver(
+                        commit_path,
+                        compiler_input.value,
+                        cflags_input.value,
+                        ldflags_input.value,
+                    )
+                    if DEBUG:
+                        print(f"[DEBUG] Compile {folder_name}: {bench_time.perf_counter() - compile_start:.2f}s")
+
+                    if not success:
+                        if DEBUG:
+                            print(f"[DEBUG] Compilation failed: {msg}")
+                        bar.update(increment=1, subtitle=f"Compile failed: {folder_name}")
+                        continue
+
+                    executable = str(commit_path / "nonograms")
+                
+                    # Build list of full puzzle paths
+                    puzzle_paths = [str(puzzles_path / pf) for pf in filtered_puzzles]
+                
+                    bar.update(increment=0, subtitle=f"{folder_name} · running hyperfine on {len(puzzle_paths)} puzzles...")
+
+                    hyperfine_start = bench_time.perf_counter()
+                    batch_results = run_benchmark_batch(
+                        executable,
+                        puzzle_paths,
+                        repetitions_input.value,
+                        warmup_input.value,
+                    )
+                    if DEBUG:
+                        print(f"[DEBUG] Hyperfine {folder_name} ({len(puzzle_paths)} puzzles, {repetitions_input.value} reps each): {bench_time.perf_counter() - hyperfine_start:.2f}s")
+
+                    runs_to_insert = []
+
+                    for puzzle_file in filtered_puzzles:
+                        puzzle_path = str(puzzles_path / puzzle_file)
+                        puzzle_info = next((p for p in available_puzzles if p["file"] == puzzle_file), {})
+                    
+                        metrics = batch_results.get(puzzle_path, {})
+                    
+                        if "error" in metrics:
+                            if DEBUG:
+                                print(f"[DEBUG] Error {puzzle_file}: {metrics['error']}")
+                            continue
+
+                        times_ms = metrics.get("times", [])
+                    
+                        for rep, time_ms in enumerate(times_ms, 1):
+                            time_ns = int(time_ms * 1_000_000)
+                        
+                            if use_db:
+                                runs_to_insert.append(
+                                    (
+                                        current_benchmark_run_id,
+                                        info["hash"],
+                                        puzzle_file,
+                                        puzzle_info.get("size", "unknown"),
+                                        puzzle_info.get("density", 0),
+                                        puzzle_info.get("id", 0),
+                                        rep,
+                                        time_ns,
+                                        time_ms,
+                                        metrics.get("mean", 0),
+                                        metrics.get("stddev", 0),
+                                        metrics.get("median", 0),
+                                        metrics.get("min", 0),
+                                        metrics.get("max", 0),
+                                        metrics.get("user", 0),
+                                        metrics.get("system", 0),
+                                        datetime.now().isoformat(),
+                                    )
+                                )
+
+                            benchmark_results.append(
+                                {
+                                    "benchmark_run_id": current_benchmark_run_id,
+                                    "commit": folder_name,
+                                    "commit_hash": info["hash"][:8],
+                                    "puzzle": puzzle_file,
+                                    "size": puzzle_info.get("size", "unknown"),
+                                    "density": puzzle_info.get("density", 0),
+                                    "rep": rep,
+                                    "time_ms": time_ms,
+                                    "mean_ms": metrics.get("mean", 0),
+                                    "stddev_ms": metrics.get("stddev", 0),
+                                    "median_ms": metrics.get("median", 0),
+                                    "min_ms": metrics.get("min", 0),
+                                    "max_ms": metrics.get("max", 0),
+                                    "user_ms": metrics.get("user", 0),
+                                    "system_ms": metrics.get("system", 0),
+                                }
+                            )
+
+                    if use_db and runs_to_insert:
+                        db_start = bench_time.perf_counter()
+                        conn.executemany(
+                            """
+                            INSERT INTO runs (
+                                benchmark_run_id, commit_hash, puzzle_name, puzzle_size, puzzle_density, puzzle_id,
+                                repetition, time_ns, time_ms, mean_ms, stddev_ms, median_ms, min_ms, max_ms,
+                                user_ms, system_ms, timestamp
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            runs_to_insert,
+                        )
+                        conn.commit()
+                        if DEBUG:
+                            print(f"[DEBUG] DB insert ({len(runs_to_insert)} rows): {bench_time.perf_counter() - db_start:.3f}s")
+
+                    if DEBUG:
+                        print(f"[DEBUG] Commit {folder_name} total: {bench_time.perf_counter() - commit_start:.2f}s")
+
+                    bar.update(increment=1, subtitle=f"{folder_name} · done")
+
+                bar.update(increment=0, subtitle="Done")
+
+            if DEBUG:
+                print(f"[DEBUG] Total: {bench_time.perf_counter() - total_start:.2f}s")
+
+        finally:
+            if conn is not None:
+                conn.close()
+    return (benchmark_results,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## Results
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(benchmark_results, mo, pd):
+    df_benchmark_results = pd.DataFrame(benchmark_results)
+    mo.ui.table(df_benchmark_results) if benchmark_results else mo.md("No benchmark results to display.")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## Historical Data
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(db_path_input, get_benchmark_runs, mo):
+    stored_runs = get_benchmark_runs(db_path_input.value)
+    if stored_runs:
+        run_options = {
+            f"#{r['id']}: {r['name']} ({r['timestamp'][:16]}) - {r['run_count']} results": r['id']
+            for r in stored_runs
+        }
+        benchmark_run_selector = mo.ui.multiselect(
+            options=run_options,
+            label="Select Benchmark Runs to Plot",
+            value=[list(run_options.keys())[0]] if run_options else [],
+            full_width=True,
+        )
+    else:
+        benchmark_run_selector = mo.ui.multiselect(
+            options={},
+            label="Select Benchmark Runs to Plot",
+            value=[],
+            full_width=True,
+        )
+    mo.md("### Select Benchmark Runs") if stored_runs else mo.md("### Select Benchmark Runs\n\n⚠️ No stored benchmark runs found.")
+    return benchmark_run_selector, stored_runs
+
+
+@app.cell(hide_code=True)
+def _(benchmark_run_selector):
+    benchmark_run_selector
+    return
+
+
+@app.cell(hide_code=True)
+def _(benchmark_run_selector, db_path_input, mo, pd, plt, sqlite3):
+    def load_benchmark_data(db_path: str, run_ids: list[int]) -> pd.DataFrame:
+        """Load benchmark data for selected runs from the database."""
+        if not run_ids:
+            return pd.DataFrame()
+
+        conn = sqlite3.connect(db_path)
+        placeholders = ",".join("?" * len(run_ids))
+        query = f"""
+            SELECT 
+                r.benchmark_run_id,
+                br.name as run_name,
+                r.commit_hash,
+                r.puzzle_name,
+                r.puzzle_size,
+                r.puzzle_density,
+                r.repetition,
+                r.time_ms
+            FROM runs r
+            JOIN benchmark_runs br ON r.benchmark_run_id = br.id
+            WHERE r.benchmark_run_id IN ({placeholders})
+            ORDER BY r.benchmark_run_id, r.commit_hash, r.puzzle_name, r.repetition
+        """
+        df = pd.read_sql_query(query, conn, params=run_ids)
+        conn.close()
+        return df
+
+    selected_run_ids = benchmark_run_selector.value if benchmark_run_selector.value else []
+    df_historical = load_benchmark_data(db_path_input.value, selected_run_ids)
+
+    if not df_historical.empty:
+        # Group by run and commit, compute average time
+        avg_time = df_historical.groupby(["benchmark_run_id", "run_name", "commit_hash"])["time_ms"].mean().reset_index()
+        avg_time = avg_time.sort_values(["benchmark_run_id", "commit_hash"])
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Plot each benchmark run with different colors
+        for run_id in avg_time["benchmark_run_id"].unique():
+            run_data = avg_time[avg_time["benchmark_run_id"] == run_id]
+            run_fullname = run_data["run_name"].iloc[0]
+            ax.plot(
+                range(len(run_data)),
+                run_data["time_ms"],
+                marker="o",
+                linestyle="-",
+                label=f"#{run_id}: {run_fullname}",
+            )
+
+            # Set x-tick labels from the last plotted run
+            ax.set_xticks(range(len(run_data)))
+            ax.set_xticklabels(run_data["commit_hash"].apply(lambda x: x[:8]), rotation=45, ha="right")
+
+        ax.set_xlabel("Commit")
+        ax.set_ylabel("Avg Time (ms)")
+        ax.set_title("Average Execution Time per Commit")
+        ax.legend(loc="best")
+        plt.tight_layout()
+        plt.show()
+    else:
+        mo.md("No historical data to display. Select benchmark runs above.")
+    return
+
+
+@app.cell(hide_code=True)
+def _(db_path_input, mo, pd, sqlite3, stored_runs):
+    if stored_runs:
+        conn_info = sqlite3.connect(db_path_input.value)
+        df_runs_info = pd.read_sql_query("""
+            SELECT 
+                id as "Run ID",
+                name as "Name",
+                timestamp as "Timestamp",
+                compiler as "Compiler",
+                cflags as "CFLAGS",
+                repetitions as "Reps",
+                warmup as "Warmup"
+            FROM benchmark_runs
+            ORDER BY timestamp DESC
+        """, conn_info)
+        conn_info.close()
+        _show = True
+    else:
+        _show = False
+    
+    mo.ui.table(df_runs_info) if _show else mo.md("_No benchmark runs stored yet._")
+    return
+
+
+@app.cell(hide_code=True)
+def _(db_path_input, get_benchmark_runs, mo):
+    _stored_runs_for_delete = get_benchmark_runs(db_path_input.value)
+
+    if _stored_runs_for_delete:
+        delete_run_options = {
+            f"#{r['id']}: {r['name']} ({r['timestamp'][:19].replace('T', ' ')})": r['id']
+            for r in _stored_runs_for_delete
+        }
+        delete_run_selector = mo.ui.dropdown(
+            options=delete_run_options,
+            label="Select Run to Delete",
+            value=None,
+        )
+        delete_run_button = mo.ui.run_button(label="Delete Run", kind="danger")
+        _show = True
+    else:
+        delete_run_selector = None
+        delete_run_button = None
+        _show = False
+    
+    mo.hstack([delete_run_selector, delete_run_button], justify="start", gap=2) if _show else mo.md("")
+    return delete_run_button, delete_run_selector
+
+
+@app.cell(hide_code=True)
+def _(
+    db_path_input,
+    delete_benchmark_run,
+    delete_run_button,
+    delete_run_selector,
+    mo,
+):
+    _delete_status = None
+    if delete_run_button is not None and delete_run_button.value and delete_run_selector is not None and delete_run_selector.value is not None:
+        _run_id = delete_run_selector.value
+        _success = delete_benchmark_run(db_path_input.value, _run_id)
+        if _success:
+            _delete_status = mo.md(f"✅ Deleted run #{_run_id}")
+        else:
+            _delete_status = mo.md(f"❌ Failed to delete run #{_run_id}")
+    _delete_status if _delete_status else mo.md("")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, shown_commits):
+    def create_single_commit_selector():
+        single_commit_options = {
+            f"{c['folder']} {'🟩' if c['valid'] else '🟥'}": c['folder']
+            for c in shown_commits
+        }
+
+        return mo.ui.dropdown(
+            options=single_commit_options,
+            label="Select Single Commit",
+            value=list(single_commit_options.keys())[-1] if single_commit_options else None,
+            full_width=True,
+        )
+
+    single_commit_selector = create_single_commit_selector()
+    single_commit_selector
+    return (single_commit_selector,)
+
+
+@app.cell(hide_code=True)
+def _(Path, commits_folder_input, mo, single_commit_selector):
+    def get_commit_message():
+        if not single_commit_selector.value:
+            return mo.md("_No commit selected_")
+
+        commit_folder = single_commit_selector.value
+        commit_path = Path(commits_folder_input.value) / commit_folder
+        commit_message_file = commit_path / "commit_message.txt"
+
+        if not commit_message_file.exists():
+            return mo.md("_commit_message.txt not found_")
+
+        message = commit_message_file.read_text()
+
+        return mo.ui.text_area(
+            value=message,
+            label="Commit Message",
+            full_width=True,
+            rows=10,
+            disabled=True,
+        )
+
+    get_commit_message()
+    return
+
+
+if __name__ == "__main__":
+    app.run()
