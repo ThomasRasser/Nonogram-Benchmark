@@ -127,11 +127,11 @@ def main():
         
         # Skip if folder already exists (unless overwrite is set)
         if output_dir.exists():
-            if not args.overwrite:
+            if args.overwrite:
+                shutil.rmtree(output_dir)
+            else:
                 skipped += 1
                 continue
-            else:
-                shutil.rmtree(output_dir)
         
         print(f"[{i}/{len(commits)}] Extracting {short_hash}: {subject[:50]}...")
         

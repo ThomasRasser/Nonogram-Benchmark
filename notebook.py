@@ -4,7 +4,7 @@ __generated_with = "0.19.0"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
     return (mo,)
@@ -20,7 +20,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import subprocess
     import sqlite3
@@ -62,7 +62,7 @@ def _(Path, mo, run_extract, subprocess, sys):
             str(script),
             GITHUB_URL,
             COMMIT_DIR,
-            "--overwrite",  # overwrite existing files and folders
+            # "--overwrite",  # Don't overwrite, since I added the -b flag to older commits by hand
         ] 
         with mo.redirect_stdout():
             print("Running commit_extractor.py ...")
@@ -94,7 +94,7 @@ def _(mo):
     )
 
     puzzles_folder_input = mo.ui.text(
-        value="./puzzles/island_fast",
+        value="./puzzles/island",
         label="Puzzles Folder",
         full_width=True,
     )
@@ -318,19 +318,19 @@ def _(subprocess):
     def run_benchmark(executable: str, puzzle_path: str, repetitions: int = 1) -> list[dict]:
         """Run multiple benchmark repetitions in a single subprocess."""
         import time
-    
+
         results = []
         for _ in range(repetitions):
             start_ns = time.perf_counter_ns()
-        
+
             result = subprocess.run(
                 [executable, puzzle_path],
                 capture_output=True,
                 text=True,
             )
-        
+
             end_ns = time.perf_counter_ns()
-        
+
             if result.returncode != 0:
                 results.append({"error": f"Execution failed: {result.stderr}"})
             else:
@@ -339,7 +339,7 @@ def _(subprocess):
                     "time_ns": elapsed_ns,
                     "time_ms": elapsed_ns / 1_000_000,
                 })
-    
+
         return results
     return (run_benchmark,)
 
@@ -397,7 +397,7 @@ def _(
     )
 
     mo.md("## Select Commits\n\n🟩 Valid  🟥 Missing files") if available_commits else mo.md("## Select Commits\n\n⚠️ No commits found.")
-    return (commit_selector,)
+    return commit_selector, shown_commits
 
 
 @app.cell(hide_code=True)
@@ -730,7 +730,7 @@ def _(benchmark_results, mo, pd, plt):
         df = pd.DataFrame(benchmark_results)
         avg_time = df.groupby("commit")["time_ms"].mean().reset_index()
         avg_time = avg_time.sort_values("commit")  # sorts chronologically due to date prefix
-    
+
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.plot(range(len(avg_time)), avg_time["time_ms"], marker="o", linestyle="-")
         ax.set_xticks(range(len(avg_time)))
@@ -742,6 +742,53 @@ def _(benchmark_results, mo, pd, plt):
         plt.show()
     else:
         mo.md("No historical data to display.")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, shown_commits):
+    def create_single_commit_selector():
+        single_commit_options = {
+            f"{c['folder']} {'🟩' if c['valid'] else '🟥'}": c['folder']
+            for c in shown_commits
+        }
+    
+        return mo.ui.dropdown(
+            options=single_commit_options,
+            label="Select Single Commit",
+            value=list(single_commit_options.keys())[-1] if single_commit_options else None,
+            full_width=True,
+        )
+
+    single_commit_selector = create_single_commit_selector()
+    single_commit_selector
+    return (single_commit_selector,)
+
+
+@app.cell(hide_code=True)
+def _(Path, commits_folder_input, mo, single_commit_selector):
+    def get_commit_message():
+        if not single_commit_selector.value:
+            return mo.md("_No commit selected_")
+    
+        commit_folder = single_commit_selector.value
+        commit_path = Path(commits_folder_input.value) / commit_folder
+        commit_message_file = commit_path / "commit_message.txt"
+    
+        if not commit_message_file.exists():
+            return mo.md("_commit_message.txt not found_")
+    
+        message = commit_message_file.read_text()
+    
+        return mo.ui.text_area(
+            value=message,
+            label="Commit Message",
+            full_width=True,
+            rows=10,
+            disabled=True,
+        )
+
+    get_commit_message()
     return
 
 
