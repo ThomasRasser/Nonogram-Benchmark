@@ -188,14 +188,14 @@ def _(mo):
     repetitions_input = mo.ui.slider(
         start=1,
         stop=100,
-        value=10,
+        value=50,
         label="Repetitions per puzzle (hyperfine runs)",
         show_value=True,
     )
     warmup_input = mo.ui.slider(
         start=0,
         stop=10,
-        value=1,
+        value=3,
         label="Warmup runs (hyperfine --warmup)",
         show_value=True,
     )
@@ -551,7 +551,7 @@ def _(json, subprocess):
     return (run_benchmark_batch,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     IMPORTANT_COMMITS,
     Path,
@@ -613,22 +613,20 @@ def _(
     commit_selector = mo.ui.multiselect(
         options=commit_options,
         label="Select Commits to Benchmark",
-        value=[list(commit_options.keys())[-1]] if commit_options else [],
+        value=list(commit_options.keys()) if commit_options else [],
         full_width=True,
     )
 
-    mo.md("## Select Commits\n\n🟩 Valid  🟥 Missing files") if available_commits else mo.md("## Select Commits\n\n⚠️ No commits found.")
+    mo.md("## Select Commits") if available_commits else mo.md("## Select Commits\n\n⚠️ No commits found.")
     return commit_selector, shown_commits
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    # flags (place above where you build commit_options)
     HIDE_INVALID = True
     HIDE_2013 = True
-    IMPORTANT_ONLY = False
+    IMPORTANT_ONLY = True
 
-    # Define the important commit hashes/folder names
     IMPORTANT_COMMITS = {
         "467ae19",      # 30.11.25
         "44fd2102f534e2df9a5f5565ef8f6a6641b0c5ed",  # stacks
@@ -646,7 +644,7 @@ def _(mo):
     hide_invalid_input = mo.ui.switch(value=HIDE_INVALID, label="Hide invalid")
     hide_2013_input = mo.ui.switch(value=HIDE_2013, label="Hide 2013")
     important_only_input = mo.ui.switch(value=IMPORTANT_ONLY, label="Important only")
-    mo.hstack([hide_invalid_input, hide_2013_input, important_only_input], justify="start")
+    mo.hstack([important_only_input, hide_invalid_input, hide_2013_input], justify="start")
     return (
         IMPORTANT_COMMITS,
         hide_2013_input,
@@ -656,8 +654,11 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(commit_selector):
-    commit_selector
+def _(commit_selector, mo):
+    mo.vstack([
+        commit_selector,
+        mo.md("🟩 Valid  🟥 Missing files")
+    ])
     return
 
 
@@ -761,7 +762,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(commit_selector, filtered_puzzles, mo):
     mo.hstack([mo.vstack(["Commits", commit_selector.value]), mo.vstack(["Puzzles", filtered_puzzles])])
     return
@@ -1014,33 +1015,50 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(db_path_input, get_benchmark_runs, mo):
-    stored_runs = get_benchmark_runs(db_path_input.value)
-    if stored_runs:
-        run_options = {
-            f"#{r['id']}: {r['name']} ({r['timestamp'][:16]}) - {r['run_count']} results": r['id']
-            for r in stored_runs
-        }
-        benchmark_run_selector = mo.ui.multiselect(
-            options=run_options,
-            label="Select Benchmark Runs to Plot",
-            value=[list(run_options.keys())[0]] if run_options else [],
-            full_width=True,
-        )
-    else:
-        benchmark_run_selector = mo.ui.multiselect(
-            options={},
-            label="Select Benchmark Runs to Plot",
-            value=[],
-            full_width=True,
-        )
-    mo.md("### Select Benchmark Runs") if stored_runs else mo.md("### Select Benchmark Runs\n\n⚠️ No stored benchmark runs found.")
+def _(btn_refresh_benchmark_selector, db_path_input, get_benchmark_runs, mo):
+    def get_benchmark_run_selector():
+        stored_runs = get_benchmark_runs(db_path_input.value)
+        if stored_runs:
+            run_options = {
+                f"#{r['id']}: {r['name']} ({r['timestamp'][:16]}) - {r['run_count']} results": r['id']
+                for r in stored_runs
+            }
+            benchmark_run_selector = mo.ui.multiselect(
+                options=run_options,
+                label="Select Benchmark Runs to Plot",
+                value=[list(run_options.keys())[0]] if run_options else [],
+                full_width=True,
+            )
+        else:
+            benchmark_run_selector = mo.ui.multiselect(
+                options={},
+                label="Select Benchmark Runs to Plot",
+                value=[],
+                full_width=True,
+            )
+        return benchmark_run_selector, stored_runs
 
-    benchmark_run_selector
+    # Always create the selector (refresh button just triggers re-evaluation)
+    benchmark_run_selector, stored_runs = get_benchmark_run_selector()
+
+    # Reference the button to create reactivity (when clicked, cell re-runs)
+    btn_refresh_benchmark_selector
+
+    mo.vstack([
+        mo.md("### Select Benchmark Runs"),
+        benchmark_run_selector
+    ])
     return benchmark_run_selector, stored_runs
 
 
-@app.cell
+@app.cell(hide_code=True)
+def _(mo):
+    btn_refresh_benchmark_selector = mo.ui.run_button(label="Refresh Benchmark Runs Selector")
+    btn_refresh_benchmark_selector
+    return (btn_refresh_benchmark_selector,)
+
+
+@app.cell(hide_code=True)
 def _(mo):
     sort_by_time_switch = mo.ui.switch(label="Sort commits by avg time", value=False)
 
@@ -1081,7 +1099,7 @@ def _(
     sort_by_time_switch,
     sqlite3,
 ):
-    # Line graph
+    # Line graph + Table
 
     def load_benchmark_data(db_path: str, run_ids: list[int]) -> pd.DataFrame:
         """Load benchmark data for selected runs from the database."""
@@ -1095,6 +1113,7 @@ def _(
                 br.name as run_name,
                 r.commit_hash,
                 c.commit_date,
+                c.commit_message,
                 r.puzzle_name,
                 r.puzzle_size,
                 r.puzzle_density,
@@ -1127,11 +1146,11 @@ def _(
                     df_historical["commit_date_parsed"] <= pd.to_datetime(date_end.value)
                 ]
             if df_historical.empty:
-                return mo.md("No data in selected date range.")
+                return mo.md("No data in selected date range."), pd.DataFrame()
 
-            # Group by run and commit, keep commit_date for sorting
+            # Group by run and commit, keep commit_date and commit_message for sorting
             avg_time = df_historical.groupby(
-                ["benchmark_run_id", "run_name", "commit_hash", "commit_date"]
+                ["benchmark_run_id", "run_name", "commit_hash", "commit_date", "commit_message"]
             )["time_ms"].mean().reset_index()
 
             # Compute global average time per commit (across all runs) for sorting
@@ -1140,7 +1159,7 @@ def _(
 
             # Build a reference table of commits
             commit_order = (
-                avg_time[["commit_hash", "commit_date"]]
+                avg_time[["commit_hash", "commit_date", "commit_message"]]
                 .drop_duplicates()
                 .merge(commit_avg, on="commit_hash")
             )
@@ -1194,7 +1213,7 @@ def _(
                 commit_order["x"] = commit_order.index
 
             if avg_time.empty:
-                return mo.md("No data remaining after applying percentage bounds filter.")
+                return mo.md("No data remaining after applying percentage bounds filter."), pd.DataFrame()
 
             if sort_by_time_switch.value:
                 # Only commit hash when sorted by time
@@ -1253,9 +1272,14 @@ def _(
             ax2.legend(loc="best")
 
             plt.tight_layout()
-            return fig
+        
+            # Build table dataframe
+            commit_table = commit_order[["commit_hash", "commit_date", "commit_message"]].copy()
+            commit_table.columns = ["Commit Hash", "Date", "Message"]
+        
+            return fig, commit_table
         else:
-            return mo.md("No historical data to display. Select benchmark runs above.")
+            return mo.md("No historical data to display. Select benchmark runs above."), pd.DataFrame()
     return (show_graph,)
 
 
@@ -1325,22 +1349,22 @@ def _(
                 )
             # Create ordered list of commits for boxplot
             ordered_commits = commit_order["commit_hash"].tolist()
-        
+
             # Get unique run IDs and assign colors
             unique_runs = df_historical["benchmark_run_id"].unique()
             colors = plt.cm.tab10(range(len(unique_runs)))
             run_colors = {run_id: colors[i] for i, run_id in enumerate(unique_runs)}
-        
+
             fig, ax = plt.subplots(figsize=(14, 6))
-        
+
             # Side by side boxplots for each run
             n_runs = len(unique_runs)
             width = 0.8 / n_runs
-        
+
             for i, run_id in enumerate(unique_runs):
                 run_data = df_historical[df_historical["benchmark_run_id"] == run_id]
                 run_name = run_data["run_name"].iloc[0]
-            
+
                 boxplot_data = []
                 positions = []
                 for j, commit in enumerate(ordered_commits):
@@ -1348,7 +1372,7 @@ def _(
                     if len(times) > 0:
                         boxplot_data.append(times)
                         positions.append(j + (i - n_runs/2 + 0.5) * width)
-            
+
                 if boxplot_data:
                     bp = ax.boxplot(
                         boxplot_data,
@@ -1362,7 +1386,7 @@ def _(
                         patch.set_alpha(0.7)
                     ax.plot([], [], color=run_colors[run_id], linewidth=10, 
                             label=f"#{run_id}: {run_name}", alpha=0.7)
-        
+
             ax.set_xticks(range(len(ordered_commits)))
             ax.set_xticklabels(commit_order["label"], rotation=45, ha="right")
             ax.set_xlabel("Commit (sorted by avg time)" if sort_by_time_switch.value else "Commit (chronological)")
@@ -1370,7 +1394,7 @@ def _(
             ax.set_title("Execution Time Distribution per Commit")
             ax.legend(loc="best")
             ax.grid(axis="y", alpha=0.3)
-        
+
             plt.tight_layout()
             return fig
         else:
@@ -1381,13 +1405,18 @@ def _(
 @app.cell(hide_code=True)
 def _(btn_show_plots, mo, show_boxplot, show_graph):
     line_graph = mo.md("Currently no line graph to display. Press Show Plots to generate.")
+    commit_table_display = mo.md("")
     boxplot = mo.md("Currently no boxplot to display. Press Show Plots to generate.")
+
     if btn_show_plots.value:
-        line_graph = show_graph()
+        line_graph, commit_table = show_graph()
+        if not commit_table.empty:
+            commit_table_display = mo.ui.table(commit_table)
         boxplot = show_boxplot()
 
     mo.vstack([
         line_graph,
+        commit_table_display,
         boxplot
     ])
     return
@@ -1468,6 +1497,14 @@ def _(
         else:
             _delete_status = mo.md(f"❌ Failed to delete run #{_run_id}")
     _delete_status if _delete_status else mo.md("")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Commit Info
+    """)
     return
 
 
