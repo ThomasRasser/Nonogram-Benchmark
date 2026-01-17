@@ -11,3 +11,6 @@ wheels/
 
 # Marimo
 __marimo__/
+
+# Database
+benchmark_results.db

@@ -51,9 +51,55 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(Path, mo, run_extract, subprocess, sys):
+def _(mo, subprocess):
     GITHUB_URL = "https://github.com/schicho/nonogram-solver/"
-    COMMIT_DIR = "./extracted_commits"
+
+    def get_remote_branches(url: str) -> list[str]:
+        """Fetch branch names from a remote repository."""
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", "--heads", url],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                branches = []
+                for line in result.stdout.strip().split("\n"):
+                    if line:
+                        # Format: <hash>\trefs/heads/<branch_name>
+                        ref = line.split("\t")[1]
+                        branch = ref.replace("refs/heads/", "")
+                        branches.append(branch)
+                return sorted(branches)
+        except Exception:
+            pass
+        return ["main", "master"]  # Fallback defaults
+
+    branches = get_remote_branches(GITHUB_URL)
+
+    branch_dropdown = mo.ui.dropdown(
+        options=branches,
+        value=branches[0] if branches else "main",
+        label="Branch"
+    )
+    overwrite_switch = mo.ui.switch(label="Overwrite existing commits", value=False)
+
+    mo.hstack([branch_dropdown, overwrite_switch], gap=2, justify="start")
+    return GITHUB_URL, branch_dropdown, overwrite_switch
+
+
+@app.cell(hide_code=True)
+def _(
+    GITHUB_URL,
+    Path,
+    branch_dropdown,
+    mo,
+    overwrite_switch,
+    run_extract,
+    subprocess,
+    sys,
+):
+    COMMIT_DIR = f"./extracted_commits"
 
     if run_extract.value:
         script = Path("./commit_extractor.py")
@@ -62,12 +108,14 @@ def _(Path, mo, run_extract, subprocess, sys):
             str(script),
             GITHUB_URL,
             COMMIT_DIR,
-            # "--overwrite",  # Don't overwrite, since I added the -b flag to older commits by hand
-        ] 
+            "--branch", branch_dropdown.value,
+        ]
+        if overwrite_switch.value:
+            cmd.append("--overwrite")
+    
         with mo.redirect_stdout():
-            print("Running commit_extractor.py ...")
+            print(f"Running commit_extractor.py on branch '{branch_dropdown.value}'...")
         result = subprocess.run(cmd, capture_output=True, text=True)
-
         with mo.redirect_stdout():
             print("STDOUT:")
             print(result.stdout)
@@ -147,7 +195,7 @@ def _(mo):
     warmup_input = mo.ui.slider(
         start=0,
         stop=10,
-        value=3,
+        value=1,
         label="Warmup runs (hyperfine --warmup)",
         show_value=True,
     )
@@ -503,16 +551,26 @@ def _(json, subprocess):
     return (run_benchmark_batch,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
+    IMPORTANT_COMMITS,
     Path,
     check_commit_folder,
     commits_folder_input,
     hide_2013_input,
     hide_invalid_input,
+    important_only_input,
     mo,
     parse_commit_info,
 ):
+    def is_important_commit(folder_name: str) -> bool:
+        """Check if a folder name contains any of the important commit hashes."""
+        for commit_hash in IMPORTANT_COMMITS:
+            if commit_hash[0:6] in folder_name:
+                return True
+        return False
+
+
     def get_available_commits():
         commits_path = Path(commits_folder_input.value)
         if not commits_path.exists():
@@ -531,8 +589,8 @@ def _(
                 })
         return commits
 
-    available_commits = get_available_commits()
 
+    available_commits = get_available_commits()
     shown_commits = available_commits
 
     # hide invalid
@@ -542,6 +600,10 @@ def _(
     # hide folders starting with 2013
     if hide_2013_input.value:
         shown_commits = [c for c in shown_commits if not c["folder"].startswith("2013")]
+
+    # show only important commits
+    if important_only_input.value:
+        shown_commits = [c for c in shown_commits if is_important_commit(c["folder"])]
 
     commit_options = {
         f"{c['folder']} {'🟩' if c['valid'] else '🟥'}": c['folder']
@@ -564,12 +626,33 @@ def _(mo):
     # flags (place above where you build commit_options)
     HIDE_INVALID = True
     HIDE_2013 = True
+    IMPORTANT_ONLY = False
+
+    # Define the important commit hashes/folder names
+    IMPORTANT_COMMITS = {
+        "467ae19",      # 30.11.25
+        "44fd2102f534e2df9a5f5565ef8f6a6641b0c5ed",  # stacks
+        "3c9fefd",      # 15.01.2026 Presolver
+        "94219d1f938076b8d77c7d82e30a04264c0c9ae7",  # compiler optimization
+        "bb5f8964137f6e54b4944e7e584da7b3e01a24f6",  # link time optimization
+        "94d7dfee57cff1a2b9ef22b47c1aacc082750095",
+        "2a58a480e6e4a995922a8fdb08d3961495a3560b",
+        "44e521facae159a3e367554fc0972d7de98db7c7",
+        "9af58700a0c438ab76228837f82e9722dbc247ca",
+        "5a2549783187c82775451e6d094224cac4d8a8b6",
+        "c2160c2a24cb93151b5b574346cc9e67bff3ed21",
+    }
 
     hide_invalid_input = mo.ui.switch(value=HIDE_INVALID, label="Hide invalid")
     hide_2013_input = mo.ui.switch(value=HIDE_2013, label="Hide 2013")
-
-    mo.hstack([hide_invalid_input, hide_2013_input], justify="start")
-    return hide_2013_input, hide_invalid_input
+    important_only_input = mo.ui.switch(value=IMPORTANT_ONLY, label="Important only")
+    mo.hstack([hide_invalid_input, hide_2013_input, important_only_input], justify="start")
+    return (
+        IMPORTANT_COMMITS,
+        hide_2013_input,
+        hide_invalid_input,
+        important_only_input,
+    )
 
 
 @app.cell(hide_code=True)
@@ -798,10 +881,10 @@ def _(
                         continue
 
                     executable = str(commit_path / "nonograms")
-                
+
                     # Build list of full puzzle paths
                     puzzle_paths = [str(puzzles_path / pf) for pf in filtered_puzzles]
-                
+
                     bar.update(increment=0, subtitle=f"{folder_name} · running hyperfine on {len(puzzle_paths)} puzzles...")
 
                     hyperfine_start = bench_time.perf_counter()
@@ -819,19 +902,19 @@ def _(
                     for puzzle_file in filtered_puzzles:
                         puzzle_path = str(puzzles_path / puzzle_file)
                         puzzle_info = next((p for p in available_puzzles if p["file"] == puzzle_file), {})
-                    
+
                         metrics = batch_results.get(puzzle_path, {})
-                    
+
                         if "error" in metrics:
                             if DEBUG:
                                 print(f"[DEBUG] Error {puzzle_file}: {metrics['error']}")
                             continue
 
                         times_ms = metrics.get("times", [])
-                    
+
                         for rep, time_ms in enumerate(times_ms, 1):
                             time_ns = int(time_ms * 1_000_000)
-                        
+
                             if use_db:
                                 runs_to_insert.append(
                                     (
@@ -952,22 +1035,54 @@ def _(db_path_input, get_benchmark_runs, mo):
             full_width=True,
         )
     mo.md("### Select Benchmark Runs") if stored_runs else mo.md("### Select Benchmark Runs\n\n⚠️ No stored benchmark runs found.")
+
+    benchmark_run_selector
     return benchmark_run_selector, stored_runs
 
 
-@app.cell(hide_code=True)
-def _(benchmark_run_selector):
-    benchmark_run_selector
-    return
+@app.cell
+def _(mo):
+    sort_by_time_switch = mo.ui.switch(label="Sort commits by avg time", value=False)
+
+    date_start = mo.ui.date(label="From", value="2025-11-15")
+    date_end = mo.ui.date(label="To", value=None)
+
+    max_improve_pct = mo.ui.number(label="Max improve (%)", value=500, start=0, stop=1000)
+    max_worsen_pct = mo.ui.number(label="Max worsen (%)", value=500, start=0, stop=1000)
+
+    mo.vstack([
+        mo.hstack([date_start, date_end, sort_by_time_switch], gap=2, justify="start"),
+        mo.hstack([max_improve_pct, max_worsen_pct], gap=2, justify="start"),
+    ])
+    return (
+        date_end,
+        date_start,
+        max_improve_pct,
+        max_worsen_pct,
+        sort_by_time_switch,
+    )
 
 
 @app.cell(hide_code=True)
-def _(benchmark_run_selector, db_path_input, mo, pd, plt, sqlite3):
+def _(
+    benchmark_run_selector,
+    date_end,
+    date_start,
+    db_path_input,
+    max_improve_pct,
+    max_worsen_pct,
+    mo,
+    pd,
+    plt,
+    sort_by_time_switch,
+    sqlite3,
+):
+    # Line graph
+
     def load_benchmark_data(db_path: str, run_ids: list[int]) -> pd.DataFrame:
         """Load benchmark data for selected runs from the database."""
         if not run_ids:
             return pd.DataFrame()
-
         conn = sqlite3.connect(db_path)
         placeholders = ",".join("?" * len(run_ids))
         query = f"""
@@ -975,6 +1090,7 @@ def _(benchmark_run_selector, db_path_input, mo, pd, plt, sqlite3):
                 r.benchmark_run_id,
                 br.name as run_name,
                 r.commit_hash,
+                c.commit_date,
                 r.puzzle_name,
                 r.puzzle_size,
                 r.puzzle_density,
@@ -982,47 +1098,271 @@ def _(benchmark_run_selector, db_path_input, mo, pd, plt, sqlite3):
                 r.time_ms
             FROM runs r
             JOIN benchmark_runs br ON r.benchmark_run_id = br.id
+            JOIN commits c ON r.commit_hash = c.commit_hash
             WHERE r.benchmark_run_id IN ({placeholders})
-            ORDER BY r.benchmark_run_id, r.commit_hash, r.puzzle_name, r.repetition
         """
         df = pd.read_sql_query(query, conn, params=run_ids)
         conn.close()
         return df
 
-    selected_run_ids = benchmark_run_selector.value if benchmark_run_selector.value else []
-    df_historical = load_benchmark_data(db_path_input.value, selected_run_ids)
-
-    if not df_historical.empty:
-        # Group by run and commit, compute average time
-        avg_time = df_historical.groupby(["benchmark_run_id", "run_name", "commit_hash"])["time_ms"].mean().reset_index()
-        avg_time = avg_time.sort_values(["benchmark_run_id", "commit_hash"])
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-
-        # Plot each benchmark run with different colors
-        for run_id in avg_time["benchmark_run_id"].unique():
-            run_data = avg_time[avg_time["benchmark_run_id"] == run_id]
-            run_fullname = run_data["run_name"].iloc[0]
-            ax.plot(
-                range(len(run_data)),
-                run_data["time_ms"],
+    def show_graph():
+        selected_run_ids = benchmark_run_selector.value if benchmark_run_selector.value else []
+        df_historical = load_benchmark_data(db_path_input.value, selected_run_ids)
+        if not df_historical.empty:
+            # Parse commit_date for filtering
+            df_historical["commit_date_parsed"] = pd.to_datetime(
+                df_historical["commit_date"].str[:10]
+            )
+            # Filter by date range
+            if date_start.value is not None:
+                df_historical = df_historical[
+                    df_historical["commit_date_parsed"] >= pd.to_datetime(date_start.value)
+                ]
+            if date_end.value is not None:
+                df_historical = df_historical[
+                    df_historical["commit_date_parsed"] <= pd.to_datetime(date_end.value)
+                ]
+            if df_historical.empty:
+                return mo.md("No data in selected date range.")
+        
+            # Group by run and commit, keep commit_date for sorting
+            avg_time = df_historical.groupby(
+                ["benchmark_run_id", "run_name", "commit_hash", "commit_date"]
+            )["time_ms"].mean().reset_index()
+        
+            # Compute global average time per commit (across all runs) for sorting
+            commit_avg = avg_time.groupby("commit_hash")["time_ms"].mean().reset_index()
+            commit_avg.columns = ["commit_hash", "global_avg_time"]
+        
+            # Build a reference table of commits
+            commit_order = (
+                avg_time[["commit_hash", "commit_date"]]
+                .drop_duplicates()
+                .merge(commit_avg, on="commit_hash")
+            )
+        
+            # Sort by avg time or by date
+            if sort_by_time_switch.value:
+                commit_order = commit_order.sort_values("global_avg_time", ascending=False)
+            else:
+                commit_order = commit_order.sort_values("commit_date")
+            commit_order = commit_order.reset_index(drop=True)
+            commit_order["x"] = commit_order.index
+        
+            # Filter commits based on percentage change from previous point PER BENCHMARK RUN
+            if max_improve_pct.value is not None or max_worsen_pct.value is not None:
+                valid_commits_per_run = []
+            
+                for run_id in avg_time["benchmark_run_id"].unique():
+                    run_data = avg_time[avg_time["benchmark_run_id"] == run_id].copy()
+                    # Merge with commit order to get sorting position
+                    run_data = run_data.merge(commit_order[["commit_hash", "x"]], on="commit_hash")
+                    run_data = run_data.sort_values("x").reset_index(drop=True)
+                
+                    # Calculate percentage change from previous commit for this run
+                    run_data["prev_time"] = run_data["time_ms"].shift(1)
+                    run_data["pct_change"] = (
+                        (run_data["time_ms"] - run_data["prev_time"]) 
+                        / run_data["prev_time"]
+                    ) * 100
+                
+                    # First commit has no previous, always keep it
+                    mask = pd.Series([True] * len(run_data))
+                
+                    # Max improve: filter out commits that improved MORE than max_improve_pct
+                    if max_improve_pct.value is not None:
+                        mask &= (run_data["pct_change"].isna()) | (run_data["pct_change"] >= -max_improve_pct.value)
+                
+                    # Max worsen: filter out commits that worsened MORE than max_worsen_pct
+                    if max_worsen_pct.value is not None:
+                        mask &= (run_data["pct_change"].isna()) | (run_data["pct_change"] <= max_worsen_pct.value)
+                
+                    valid_commits_per_run.append(set(run_data[mask]["commit_hash"].tolist()))
+            
+                # Only keep commits that are valid across ALL runs
+                if valid_commits_per_run:
+                    valid_commits = set.intersection(*valid_commits_per_run)
+                else:
+                    valid_commits = set()
+            
+                avg_time = avg_time[avg_time["commit_hash"].isin(valid_commits)]
+                commit_order = commit_order[commit_order["commit_hash"].isin(valid_commits)].reset_index(drop=True)
+                commit_order["x"] = commit_order.index
+        
+            if avg_time.empty:
+                return mo.md("No data remaining after applying percentage bounds filter.")
+        
+            if sort_by_time_switch.value:
+                # Only commit hash when sorted by time
+                commit_order["label"] = commit_order["commit_hash"].str[:8]
+            else:
+                # Date + commit hash when chronological
+                commit_order["label"] = (
+                    pd.to_datetime(commit_order["commit_date"].str[:10])
+                    .dt.strftime("%m-%d")
+                    + " "
+                    + commit_order["commit_hash"].str[:8]
+                )
+        
+            # Merge x positions back into avg_time
+            avg_time = avg_time.merge(commit_order[["commit_hash", "x"]], on="commit_hash")
+        
+            # Create two subplots
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+        
+            # Plot 1: Individual benchmark runs
+            for run_id in avg_time["benchmark_run_id"].unique():
+                run_data = avg_time[avg_time["benchmark_run_id"] == run_id].sort_values("x")
+                run_fullname = run_data["run_name"].iloc[0]
+                ax1.plot(
+                    run_data["x"],
+                    run_data["time_ms"],
+                    marker="o",
+                    linestyle="-",
+                    label=f"#{run_id}: {run_fullname}",
+                )
+        
+            ax1.set_ylabel("Avg Time (ms)")
+            ax1.set_title("Average Execution Time per Commit (Individual Runs)")
+            ax1.legend(loc="best")
+        
+            # Plot 2: Average across all runs
+            avg_across_runs = avg_time.groupby(["commit_hash", "x"])["time_ms"].mean().reset_index()
+            avg_across_runs = avg_across_runs.sort_values("x")
+        
+            ax2.plot(
+                avg_across_runs["x"],
+                avg_across_runs["time_ms"],
                 marker="o",
                 linestyle="-",
-                label=f"#{run_id}: {run_fullname}",
+                color="black",
+                linewidth=2,
+                label="Average of all runs",
             )
+        
+            # Set x-tick labels
+            ax2.set_xticks(commit_order["x"])
+            ax2.set_xticklabels(commit_order["label"], rotation=45, ha="right")
+            ax2.set_xlabel("Commit (sorted by avg time)" if sort_by_time_switch.value else "Commit (chronological)")
+            ax2.set_ylabel("Avg Time (ms)")
+            ax2.set_title("Average Execution Time per Commit (Mean Across All Runs)")
+            ax2.legend(loc="best")
+        
+            plt.tight_layout()
+            plt.show()
+        else:
+            mo.md("No historical data to display. Select benchmark runs above.")
 
-            # Set x-tick labels from the last plotted run
-            ax.set_xticks(range(len(run_data)))
-            ax.set_xticklabels(run_data["commit_hash"].apply(lambda x: x[:8]), rotation=45, ha="right")
+    show_graph()
+    return
 
-        ax.set_xlabel("Commit")
-        ax.set_ylabel("Avg Time (ms)")
-        ax.set_title("Average Execution Time per Commit")
-        ax.legend(loc="best")
-        plt.tight_layout()
-        plt.show()
-    else:
-        mo.md("No historical data to display. Select benchmark runs above.")
+
+@app.cell(hide_code=True)
+def _(
+    benchmark_run_selector,
+    db_path_input,
+    mo,
+    pd,
+    plt,
+    sort_by_time_switch,
+    sqlite3,
+):
+    # Boxplot
+
+    def load_benchmark_data_boxplot(db_path: str, run_ids: list[int]) -> pd.DataFrame:
+        """Load benchmark data for selected runs from the database."""
+        if not run_ids:
+            return pd.DataFrame()
+        conn = sqlite3.connect(db_path)
+        placeholders = ",".join("?" * len(run_ids))
+        query = f"""
+            SELECT 
+                r.benchmark_run_id,
+                br.name as run_name,
+                r.commit_hash,
+                c.commit_date,
+                r.puzzle_name,
+                r.time_ms
+            FROM runs r
+            JOIN benchmark_runs br ON r.benchmark_run_id = br.id
+            JOIN commits c ON r.commit_hash = c.commit_hash
+            WHERE r.benchmark_run_id IN ({placeholders})
+        """
+        df = pd.read_sql_query(query, conn, params=run_ids)
+        conn.close()
+        return df
+
+    def show_boxplot():
+        selected_run_ids = benchmark_run_selector.value if benchmark_run_selector.value else []
+        df_historical = load_benchmark_data_boxplot(db_path_input.value, selected_run_ids)
+    
+        if not df_historical.empty:
+            # Compute average time per commit for sorting
+            commit_avg = df_historical.groupby("commit_hash")["time_ms"].mean().reset_index()
+            commit_avg.columns = ["commit_hash", "global_avg_time"]
+    
+            # Build commit order reference
+            commit_order = (
+                df_historical[["commit_hash", "commit_date"]]
+                .drop_duplicates()
+                .merge(commit_avg, on="commit_hash")
+            )
+    
+            # Sort by avg time or by date
+            if sort_by_time_switch.value:
+                commit_order = commit_order.sort_values("global_avg_time", ascending=False)
+            else:
+                commit_order = commit_order.sort_values("commit_date")
+    
+            commit_order = commit_order.reset_index(drop=True)
+            commit_order["x"] = commit_order.index
+    
+            # Create labels
+            commit_order["label"] = (
+                pd.to_datetime(commit_order["commit_date"].str[:10])
+                .dt.strftime("%m-%d")
+                + " "
+                + commit_order["commit_hash"].str[:8]
+            )
+    
+            # Create ordered list of commits for boxplot
+            ordered_commits = commit_order["commit_hash"].tolist()
+    
+            # Prepare data for boxplot: list of arrays, one per commit
+            boxplot_data = []
+            for commit in ordered_commits:
+                times = df_historical[df_historical["commit_hash"] == commit]["time_ms"].values
+                boxplot_data.append(times)
+    
+            fig, ax = plt.subplots(figsize=(14, 6))
+    
+            bp = ax.boxplot(
+                boxplot_data,
+                positions=range(len(ordered_commits)),
+                widths=0.6,
+                patch_artist=True,
+                showfliers=False,  # Hide outliers for cleaner plot
+            )
+    
+            # Style the boxes
+            for patch in bp["boxes"]:
+                patch.set_facecolor("lightblue")
+                patch.set_alpha(0.7)
+    
+            # Set x-tick labels
+            ax.set_xticks(range(len(ordered_commits)))
+            ax.set_xticklabels(commit_order["label"], rotation=45, ha="right")
+    
+            ax.set_xlabel("Commit (sorted by avg time)" if sort_by_time_switch.value else "Commit (chronological)")
+            ax.set_ylabel("Time (ms)")
+            ax.set_title("Execution Time Distribution per Commit")
+            ax.grid(axis="y", alpha=0.3)
+            plt.tight_layout()
+            plt.show()
+        else:
+            mo.md("No historical data to display. Select benchmark runs above.")
+
+    show_boxplot()
     return
 
 
@@ -1046,7 +1386,7 @@ def _(db_path_input, mo, pd, sqlite3, stored_runs):
         _show = True
     else:
         _show = False
-    
+
     mo.ui.table(df_runs_info) if _show else mo.md("_No benchmark runs stored yet._")
     return
 
@@ -1071,7 +1411,7 @@ def _(db_path_input, get_benchmark_runs, mo):
         delete_run_selector = None
         delete_run_button = None
         _show = False
-    
+
     mo.hstack([delete_run_selector, delete_run_button], justify="start", gap=2) if _show else mo.md("")
     return delete_run_button, delete_run_selector
 

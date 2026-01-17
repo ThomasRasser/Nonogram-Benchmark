@@ -77,6 +77,10 @@ def main():
         help="Base URL for commit links (e.g., https://github.com/user/repo). Defaults to clone URL without .git suffix."
     )
     parser.add_argument(
+        "--branch", "-b",
+        help="Branch to extract commits from (defaults to repository's default branch)"
+    )
+    parser.add_argument(
         "--keep-clone",
         action="store_true",
         help="Keep the cloned repository (otherwise deleted after extraction)"
@@ -100,7 +104,11 @@ def main():
     
     print(f"Cloning {args.url}...")
     try:
-        run_git(["clone", args.url, str(temp_clone)])
+        clone_cmd = ["clone", args.url, str(temp_clone)]
+        if args.branch:
+            clone_cmd.extend(["--branch", args.branch])
+            print(f"Using branch: {args.branch}")
+        run_git(clone_cmd)
     except RuntimeError as e:
         print(f"Error cloning repository: {e}")
         sys.exit(1)
