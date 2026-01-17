@@ -1,0 +1,6 @@
+https://github.com/schicho/nonogram-solver/commit/5f43a261ad74ec5c266bf4c30435d5487fd6fb82
+
+Fix presolver bug
+
+Presolver is supposed to return -1 if impossibility is detected but in that case
+only the count of unresolved cells was mistakenly increased.

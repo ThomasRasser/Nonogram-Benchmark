@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/dacc6f9f63328960eb560d3e5fd7ce8ed05e810a
+
+Sort Stack by Complexity (algorithmic opt)

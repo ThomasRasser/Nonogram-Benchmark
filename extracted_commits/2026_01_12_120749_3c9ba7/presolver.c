@@ -1,0 +1,125 @@
+#include "presolver.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "stocks.h"
+
+/** * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * presolve: O(L*N²)		Calls stackline on every row and on every column once to solve	 			*
+ *							the easiest cells, to pave the way for the fuller linesolver.				*
+ *																										*
+ * @param Puzzle* :		puzzle to preprocess														*
+ *	@return int :			number of unsolved cells left in the puzzle									*
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+int presolve(Puzzle* puzzle) {  // O(L*N²)
+    int unsolvedCellCount = puzzle->length[ROW] * puzzle->length[COL];
+    int i, x, buf;
+    for (x = ROW; x < AXES; x++) {
+        for (i = 0; i < puzzle->length[x]; i++) {
+            if (unsolvedCellCount > 0) {
+                buf = stackline(&puzzle->line[x][i], puzzle->length[!x]);
+                unsolvedCellCount -= buf;
+                puzzle->line[x][i].unsolvedCells -= buf;
+            } else {
+                return unsolvedCellCount;
+            }
+        }
+    }
+
+    return unsolvedCellCount;
+}
+
+#define IMPOSSIBLE -1
+/** * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * stackline: O(N²)		Solves cells implicitly based on the line's native 							*
+ *							characteristics, ie block number and block sizes.							*
+ * 						NOTE: this routine will never provide new information if used more than once*
+ *							for a single line.															*
+ *																										*
+ * @param Line* :			line to solve																*
+ * @param int :			length of this line 														*
+ *	@return int :			number of solved cells, or -1 if an impossibility was discovered.			*
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+int stackline(Line* line, int length) {
+    int sum = getMinSumOfBlocksAndBlanks(line, 0);  // O(N)
+    int cap = getLengthOfLargestBlock(line);        // O(N)
+
+    if (sum > length) {
+        return IMPOSSIBLE;  // impossible
+    }
+
+    Cell** cells = line->cells;
+    Block* block = line->block;
+    int blockNum = line->blockNum;
+    int i, ret = 0;
+
+    if (sum == 0) {  // O(L)
+        /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+         * Special case: If sum is 0, then the whole line is blank!  *
+         * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+        for (i = 0; i < length; i++) {  // O(L)
+            if (cells[i]->state == STATE_UNKN) {
+                cells[i]->state = STATE_BLNK;
+                ret++;
+            } else if (cells[i]->state == STATE_FULL) {
+                return IMPOSSIBLE;  // impossible
+            }
+        }
+        return ret;
+    } else if (length == sum) {  // O(N*B)
+        /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+         * Special case: If sum is length, then the whole line is known! *
+         * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+        int i, j, l = 0;
+        for (i = 0; i < blockNum; i++, l++) {             // O(N)
+            for (j = 0; j < block[i].length; j++, l++) {  // O(B)
+                if (cells[l]->state == STATE_UNKN) {
+                    cells[l]->state = STATE_FULL;
+                    ret++;
+                } else if (cells[l]->state == STATE_BLNK) {
+                    return IMPOSSIBLE;  // impossible
+                }
+            }
+
+            if (l < length) {
+                if (cells[l]->state == STATE_UNKN) {
+                    cells[l]->state = STATE_BLNK;
+                    ret++;
+                } else if (cells[l]->state == STATE_FULL) {  // next cell must be blnk
+                    return IMPOSSIBLE;                       // impossible
+                }
+            }
+        }
+        return ret;
+    } else if (length - sum < cap) {  // only situation in which stacking will do anything
+        /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+         *  Uses simple math to identify implied cells for general cases *
+         * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+        int n = 0;
+        i = length - sum;  // the first (length - sum) cells are unaffected, skip them
+        while (n < blockNum) {
+            int limit = i + block[n].length - (length - sum);  // the next (blocksize - (linelength - sum)) cells are full
+            if (block[n].length > length - sum) {              // is there an overlap of this block?
+                for (; i < limit; i++) {
+                    if (cells[i]->state == STATE_BLNK) {
+                        return IMPOSSIBLE;
+                    } else if (cells[i]->state == STATE_UNKN) {
+                        cells[i]->state = STATE_FULL;
+                        ret++;
+                    }
+                }
+                i += length - sum;  // the next (length - sum) cells are unaffected
+            } else {
+                i += line->block[n].length;  // skip blocksize cells!
+            }
+
+            i++;  // 1 more cell, for the mandatory space
+            n++;  // next block
+        }
+        return ret;
+    }
+    return 0;
+}
+#undef IMPOSSIBLE

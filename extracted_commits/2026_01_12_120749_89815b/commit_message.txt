@@ -1,0 +1,7 @@
+https://github.com/schicho/nonogram-solver/commit/89815b2abf7bbee1f7d575a3fe3c5dab05258dff
+
+Revert "Removed stack from ExamineBlocks"
+
+This reverts commit 0422e66f518689fe48e46e9fbfdf1174eb78c680.
+
+Not an improvement (went from 3.78s to 19.92s)

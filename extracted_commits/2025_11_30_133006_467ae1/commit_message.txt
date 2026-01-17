@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/467ae19920426df29c8cf7bfda3d937bff05ebe9
+
+Merge pull request #3 from schicho/feature/stocks2
+
+Feature/stocks2

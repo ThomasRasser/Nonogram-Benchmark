@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/0728d27b0fcbbd76742c453e790bc798c7c19e92
+
+Gprof (#4)
+
+* grof code and analysis of this current commit

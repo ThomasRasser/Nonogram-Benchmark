@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/abf92691b325819abf2027686499de4479ae2a14
+
+Merge pull request #8 from schicho/opt-solver
+
+Opt solver

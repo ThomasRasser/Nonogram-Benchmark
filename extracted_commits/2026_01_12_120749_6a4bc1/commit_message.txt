@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/6a4bc140c927aae2205b0fdd46993c1837516078
+
+Revert "Removed Switch in MergeBlockPositions"
+
+This reverts commit 4ced0592352346b69e7a8928a009700ceba3ac2e.

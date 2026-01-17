@@ -1,0 +1,3 @@
+https://github.com/schicho/nonogram-solver/commit/c238f7b1996267722ebcba0782501694576a96aa
+
+Removed Switch in MergeBlockPositions

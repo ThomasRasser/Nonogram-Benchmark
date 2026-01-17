@@ -1,0 +1,5 @@
+https://github.com/schicho/nonogram-solver/commit/1f880156bcb325dbe82877441feb480c159bc6e0
+
+Revert "Optimize Push/pop"
+
+This reverts commit 9fe589c196b10edc175c2d88309e51f41b02ea6f.
