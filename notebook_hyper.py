@@ -1273,10 +1273,21 @@ def _(
 
             plt.tight_layout()
         
-            # Build table dataframe
-            commit_table = commit_order[["commit_hash", "commit_date", "commit_message"]].copy()
-            commit_table.columns = ["Commit Hash", "Date", "Message"]
-        
+            # Build table dataframe with speedup info
+            commit_table = commit_order[["commit_hash", "commit_date", "commit_message", "global_avg_time"]].copy()
+            commit_table["prev_time"] = commit_table["global_avg_time"].shift(1)
+            commit_table["speedup_pct"] = ((commit_table["prev_time"] - commit_table["global_avg_time"]) / commit_table["prev_time"] * 100).round(2)
+            commit_table = commit_table.rename(columns={
+                "commit_hash": "Commit Hash",
+                "commit_date": "Date",
+                "commit_message": "Message",
+                "global_avg_time": "Time (ms)",
+                "prev_time": "Prev Time (ms)",
+                "speedup_pct": "Speedup (%)"
+            })
+            commit_table["Time (ms)"] = commit_table["Time (ms)"].round(3)
+            commit_table["Prev Time (ms)"] = commit_table["Prev Time (ms)"].round(3)
+
             return fig, commit_table
         else:
             return mo.md("No historical data to display. Select benchmark runs above."), pd.DataFrame()
