@@ -188,14 +188,14 @@ def _(mo):
     repetitions_input = mo.ui.slider(
         start=1,
         stop=100,
-        value=50,
+        value=100,
         label="Repetitions per puzzle (hyperfine runs)",
         show_value=True,
     )
     warmup_input = mo.ui.slider(
         start=0,
         stop=10,
-        value=3,
+        value=5,
         label="Warmup runs (hyperfine --warmup)",
         show_value=True,
     )
@@ -211,8 +211,17 @@ def _(mo):
         placeholder="e.g., 'baseline', 'after-optimization', 'gcc-vs-clang'",
         full_width=True,
     )
-    benchmark_name_input
-    return (benchmark_name_input,)
+
+    num_runs_input = mo.ui.number(
+        value=1,
+        start=1,
+        stop=20,
+        step=1,
+        label="Number of runs",
+    )
+
+    mo.vstack([benchmark_name_input, num_runs_input])
+    return benchmark_name_input, num_runs_input
 
 
 @app.cell(hide_code=True)
@@ -538,13 +547,13 @@ def _(json, subprocess):
 
             results[puzzle_path] = {
                 "times": times_ms,
-                "mean": benchmark.get("mean", 0) * 1000,
-                "stddev": benchmark.get("stddev", 0) * 1000,
-                "median": benchmark.get("median", 0) * 1000,
-                "min": benchmark.get("min", 0) * 1000,
-                "max": benchmark.get("max", 0) * 1000,
-                "user": benchmark.get("user", 0) * 1000,
-                "system": benchmark.get("system", 0) * 1000,
+                "mean": (benchmark.get("mean") or 0) * 1000,
+                "stddev": (benchmark.get("stddev") or 0) * 1000,
+                "median": (benchmark.get("median") or 0) * 1000,
+                "min": (benchmark.get("min") or 0) * 1000,
+                "max": (benchmark.get("max") or 0) * 1000,
+                "user": (benchmark.get("user") or 0) * 1000,
+                "system": (benchmark.get("system") or 0) * 1000,
             }
 
         return results
@@ -769,10 +778,17 @@ def _(commit_selector, filtered_puzzles, mo):
 
 
 @app.cell(hide_code=True)
-def _(commit_selector, filtered_puzzles, mo, repetitions_input, warmup_input):
+def _(
+    commit_selector,
+    filtered_puzzles,
+    mo,
+    num_runs_input,
+    repetitions_input,
+    warmup_input,
+):
     _num_runs = len(commit_selector.value) * len(filtered_puzzles) * repetitions_input.value
     _num_runs += warmup_input.value * len(commit_selector.value) * len(filtered_puzzles)
-    run_button = mo.ui.run_button(label=f"Run Benchmark on {_num_runs:,} runs")
+    run_button = mo.ui.run_button(label=f"Run Benchmark | {_num_runs:,} runs | {num_runs_input.value} time(s)")
     store_in_db_input = mo.ui.switch(
         value=True,
         label="Store in DB",
@@ -799,6 +815,7 @@ def _(
     init_database,
     ldflags_input,
     mo,
+    num_runs_input,
     parse_commit_info,
     puzzles_folder_input,
     repetitions_input,
@@ -824,166 +841,179 @@ def _(
             if conn:
                 conn.execute("PRAGMA busy_timeout = 5000")
 
-            # Create a new benchmark run entry
-            if use_db:
-                run_name = benchmark_name_input.value.strip() or f"Run {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                current_benchmark_run_id = create_benchmark_run(
-                    conn,
-                    run_name,
-                    compiler_input.value,
-                    cflags_input.value,
-                    ldflags_input.value,
-                    repetitions_input.value,
-                    warmup_input.value,
-                )
-
             commits_path = Path(commits_folder_input.value)
             puzzles_path = Path(puzzles_folder_input.value)
 
             total_commits = len(commit_selector.value)
+        
+            # Multiple runs loop
+            base_run_name = benchmark_name_input.value.strip()
+            num_runs = int(num_runs_input.value)
 
-            with mo.status.progress_bar(total=total_commits, title="Benchmarking") as bar:
-                for folder_name in commit_selector.value:
-                    commit_start = bench_time.perf_counter()
-                    commit_path = commits_path / folder_name
+            for run_idx in range(1, num_runs + 1):
+                # Determine run name with suffix
+                if num_runs > 1:
+                    run_name = f"{base_run_name}-{run_idx}" if base_run_name else f"run-{run_idx}"
+                else:
+                    run_name = base_run_name or f"Run {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-                    is_valid, missing = check_commit_folder(commit_path)
-                    if not is_valid:
-                        if DEBUG:
-                            print(f"[DEBUG] Skipping {folder_name}: missing {missing}")
-                        bar.update(increment=1, subtitle=f"Skipping {folder_name}")
-                        continue
+                if DEBUG:
+                    print(f"[DEBUG] Starting run {run_idx}/{num_runs}: {run_name}")
 
-                    info = parse_commit_info(commit_path)
-
-                    if use_db:
-                        conn.execute(
-                            """
-                            INSERT OR REPLACE INTO commits (commit_hash, commit_date, commit_message, commit_url)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (info["hash"], info["date"], info["message"], info["url"]),
-                        )
-
-                    compile_start = bench_time.perf_counter()
-                    success, msg = compile_solver(
-                        commit_path,
+                # Create a new benchmark run entry
+                if use_db:
+                    current_benchmark_run_id = create_benchmark_run(
+                        conn,
+                        run_name,
                         compiler_input.value,
                         cflags_input.value,
                         ldflags_input.value,
-                    )
-                    if DEBUG:
-                        print(f"[DEBUG] Compile {folder_name}: {bench_time.perf_counter() - compile_start:.2f}s")
-
-                    if not success:
-                        if DEBUG:
-                            print(f"[DEBUG] Compilation failed: {msg}")
-                        bar.update(increment=1, subtitle=f"Compile failed: {folder_name}")
-                        continue
-
-                    executable = str(commit_path / "nonograms")
-
-                    # Build list of full puzzle paths
-                    puzzle_paths = [str(puzzles_path / pf) for pf in filtered_puzzles]
-
-                    bar.update(increment=0, subtitle=f"{folder_name} · running hyperfine on {len(puzzle_paths)} puzzles...")
-
-                    hyperfine_start = bench_time.perf_counter()
-                    batch_results = run_benchmark_batch(
-                        executable,
-                        puzzle_paths,
                         repetitions_input.value,
                         warmup_input.value,
                     )
-                    if DEBUG:
-                        print(f"[DEBUG] Hyperfine {folder_name} ({len(puzzle_paths)} puzzles, {repetitions_input.value} reps each): {bench_time.perf_counter() - hyperfine_start:.2f}s")
 
-                    runs_to_insert = []
+                with mo.status.progress_bar(total=total_commits, title=f"Run {run_idx}/{num_runs}: {run_name}") as bar:
+                    for folder_name in commit_selector.value:
+                        commit_start = bench_time.perf_counter()
+                        commit_path = commits_path / folder_name
 
-                    for puzzle_file in filtered_puzzles:
-                        puzzle_path = str(puzzles_path / puzzle_file)
-                        puzzle_info = next((p for p in available_puzzles if p["file"] == puzzle_file), {})
-
-                        metrics = batch_results.get(puzzle_path, {})
-
-                        if "error" in metrics:
+                        is_valid, missing = check_commit_folder(commit_path)
+                        if not is_valid:
                             if DEBUG:
-                                print(f"[DEBUG] Error {puzzle_file}: {metrics['error']}")
+                                print(f"[DEBUG] Skipping {folder_name}: missing {missing}")
+                            bar.update(increment=1, subtitle=f"Skipping {folder_name}")
                             continue
 
-                        times_ms = metrics.get("times", [])
+                        info = parse_commit_info(commit_path)
 
-                        for rep, time_ms in enumerate(times_ms, 1):
-                            time_ns = int(time_ms * 1_000_000)
-
-                            if use_db:
-                                runs_to_insert.append(
-                                    (
-                                        current_benchmark_run_id,
-                                        info["hash"],
-                                        puzzle_file,
-                                        puzzle_info.get("size", "unknown"),
-                                        puzzle_info.get("density", 0),
-                                        puzzle_info.get("id", 0),
-                                        rep,
-                                        time_ns,
-                                        time_ms,
-                                        metrics.get("mean", 0),
-                                        metrics.get("stddev", 0),
-                                        metrics.get("median", 0),
-                                        metrics.get("min", 0),
-                                        metrics.get("max", 0),
-                                        metrics.get("user", 0),
-                                        metrics.get("system", 0),
-                                        datetime.now().isoformat(),
-                                    )
-                                )
-
-                            benchmark_results.append(
-                                {
-                                    "benchmark_run_id": current_benchmark_run_id,
-                                    "commit": folder_name,
-                                    "commit_hash": info["hash"][:8],
-                                    "puzzle": puzzle_file,
-                                    "size": puzzle_info.get("size", "unknown"),
-                                    "density": puzzle_info.get("density", 0),
-                                    "rep": rep,
-                                    "time_ms": time_ms,
-                                    "mean_ms": metrics.get("mean", 0),
-                                    "stddev_ms": metrics.get("stddev", 0),
-                                    "median_ms": metrics.get("median", 0),
-                                    "min_ms": metrics.get("min", 0),
-                                    "max_ms": metrics.get("max", 0),
-                                    "user_ms": metrics.get("user", 0),
-                                    "system_ms": metrics.get("system", 0),
-                                }
+                        if use_db:
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO commits (commit_hash, commit_date, commit_message, commit_url)
+                                VALUES (?, ?, ?, ?)
+                                """,
+                                (info["hash"], info["date"], info["message"], info["url"]),
                             )
 
-                    if use_db and runs_to_insert:
-                        db_start = bench_time.perf_counter()
-                        conn.executemany(
-                            """
-                            INSERT INTO runs (
-                                benchmark_run_id, commit_hash, puzzle_name, puzzle_size, puzzle_density, puzzle_id,
-                                repetition, time_ns, time_ms, mean_ms, stddev_ms, median_ms, min_ms, max_ms,
-                                user_ms, system_ms, timestamp
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            runs_to_insert,
+                        compile_start = bench_time.perf_counter()
+                        success, msg = compile_solver(
+                            commit_path,
+                            compiler_input.value,
+                            cflags_input.value,
+                            ldflags_input.value,
                         )
-                        conn.commit()
                         if DEBUG:
-                            print(f"[DEBUG] DB insert ({len(runs_to_insert)} rows): {bench_time.perf_counter() - db_start:.3f}s")
+                            print(f"[DEBUG] Compile {folder_name}: {bench_time.perf_counter() - compile_start:.2f}s")
 
-                    if DEBUG:
-                        print(f"[DEBUG] Commit {folder_name} total: {bench_time.perf_counter() - commit_start:.2f}s")
+                        if not success:
+                            if DEBUG:
+                                print(f"[DEBUG] Compilation failed: {msg}")
+                            bar.update(increment=1, subtitle=f"Compile failed: {folder_name}")
+                            continue
 
-                    bar.update(increment=1, subtitle=f"{folder_name} · done")
+                        executable = str(commit_path / "nonograms")
 
-                bar.update(increment=0, subtitle="Done")
+                        # Build list of full puzzle paths
+                        puzzle_paths = [str(puzzles_path / pf) for pf in filtered_puzzles]
+
+                        bar.update(increment=0, subtitle=f"{folder_name} · running hyperfine on {len(puzzle_paths)} puzzles...")
+
+                        hyperfine_start = bench_time.perf_counter()
+                        batch_results = run_benchmark_batch(
+                            executable,
+                            puzzle_paths,
+                            repetitions_input.value,
+                            warmup_input.value,
+                        )
+                        if DEBUG:
+                            print(f"[DEBUG] Hyperfine {folder_name} ({len(puzzle_paths)} puzzles, {repetitions_input.value} reps each): {bench_time.perf_counter() - hyperfine_start:.2f}s")
+
+                        runs_to_insert = []
+
+                        for puzzle_file in filtered_puzzles:
+                            puzzle_path = str(puzzles_path / puzzle_file)
+                            puzzle_info = next((p for p in available_puzzles if p["file"] == puzzle_file), {})
+
+                            metrics = batch_results.get(puzzle_path, {})
+
+                            if "error" in metrics:
+                                if DEBUG:
+                                    print(f"[DEBUG] Error {puzzle_file}: {metrics['error']}")
+                                continue
+
+                            times_ms = metrics.get("times", [])
+
+                            for rep, time_ms in enumerate(times_ms, 1):
+                                time_ns = int(time_ms * 1_000_000)
+
+                                if use_db:
+                                    runs_to_insert.append(
+                                        (
+                                            current_benchmark_run_id,
+                                            info["hash"],
+                                            puzzle_file,
+                                            puzzle_info.get("size", "unknown"),
+                                            puzzle_info.get("density", 0),
+                                            puzzle_info.get("id", 0),
+                                            rep,
+                                            time_ns,
+                                            time_ms,
+                                            metrics.get("mean", 0),
+                                            metrics.get("stddev", 0),
+                                            metrics.get("median", 0),
+                                            metrics.get("min", 0),
+                                            metrics.get("max", 0),
+                                            metrics.get("user", 0),
+                                            metrics.get("system", 0),
+                                            datetime.now().isoformat(),
+                                        )
+                                    )
+
+                                benchmark_results.append(
+                                    {
+                                        "benchmark_run_id": current_benchmark_run_id,
+                                        "commit": folder_name,
+                                        "commit_hash": info["hash"][:8],
+                                        "puzzle": puzzle_file,
+                                        "size": puzzle_info.get("size", "unknown"),
+                                        "density": puzzle_info.get("density", 0),
+                                        "rep": rep,
+                                        "time_ms": time_ms,
+                                        "mean_ms": metrics.get("mean", 0),
+                                        "stddev_ms": metrics.get("stddev", 0),
+                                        "median_ms": metrics.get("median", 0),
+                                        "min_ms": metrics.get("min", 0),
+                                        "max_ms": metrics.get("max", 0),
+                                        "user_ms": metrics.get("user", 0),
+                                        "system_ms": metrics.get("system", 0),
+                                    }
+                                )
+
+                        if use_db and runs_to_insert:
+                            db_start = bench_time.perf_counter()
+                            conn.executemany(
+                                """
+                                INSERT INTO runs (
+                                    benchmark_run_id, commit_hash, puzzle_name, puzzle_size, puzzle_density, puzzle_id,
+                                    repetition, time_ns, time_ms, mean_ms, stddev_ms, median_ms, min_ms, max_ms,
+                                    user_ms, system_ms, timestamp
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                runs_to_insert,
+                            )
+                            conn.commit()
+                            if DEBUG:
+                                print(f"[DEBUG] DB insert ({len(runs_to_insert)} rows): {bench_time.perf_counter() - db_start:.3f}s")
+
+                        if DEBUG:
+                            print(f"[DEBUG] Commit {folder_name} total: {bench_time.perf_counter() - commit_start:.2f}s")
+
+                        bar.update(increment=1, subtitle=f"{folder_name} · done")
+
+                    bar.update(increment=0, subtitle="Done")
 
             if DEBUG:
-                print(f"[DEBUG] Total: {bench_time.perf_counter() - total_start:.2f}s")
+                print(f"[DEBUG] Total ({num_runs} runs): {bench_time.perf_counter() - total_start:.2f}s")
 
         finally:
             if conn is not None:
@@ -1272,7 +1302,7 @@ def _(
             ax2.legend(loc="best")
 
             plt.tight_layout()
-        
+
             # Build table dataframe with speedup info
             commit_table = commit_order[["commit_hash", "commit_date", "commit_message", "global_avg_time"]].copy()
             commit_table["prev_time"] = commit_table["global_avg_time"].shift(1)
