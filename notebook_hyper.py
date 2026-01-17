@@ -845,7 +845,7 @@ def _(
             puzzles_path = Path(puzzles_folder_input.value)
 
             total_commits = len(commit_selector.value)
-        
+
             # Multiple runs loop
             base_run_name = benchmark_name_input.value.strip()
             num_runs = int(num_runs_input.value)
@@ -1443,7 +1443,7 @@ def _(
     return (show_boxplot,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(btn_show_plots, mo, show_boxplot, show_graph):
     line_graph = mo.md("Currently no line graph to display. Press Show Plots to generate.")
     commit_table_display = mo.md("")
@@ -1459,6 +1459,229 @@ def _(btn_show_plots, mo, show_boxplot, show_graph):
         line_graph,
         commit_table_display,
         boxplot
+    ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Compare
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(btn_refresh_group_selector, db_path_input, get_benchmark_runs, mo):
+    def get_group_selectors():
+        stored_runs = get_benchmark_runs(db_path_input.value)
+        if stored_runs:
+            run_options = {
+                f"#{r['id']}: {r['name']} ({r['timestamp'][:16]}) - {r['run_count']} results": r['id']
+                for r in stored_runs
+            }
+            group_a_selector = mo.ui.multiselect(
+                options=run_options,
+                label="Group A (e.g., baseline runs)",
+                value=[],
+                full_width=True,
+            )
+            group_b_selector = mo.ui.multiselect(
+                options=run_options,
+                label="Group B (e.g., optimized runs)",
+                value=[],
+                full_width=True,
+            )
+        else:
+            group_a_selector = mo.ui.multiselect(options={}, label="Group A", value=[], full_width=True)
+            group_b_selector = mo.ui.multiselect(options={}, label="Group B", value=[], full_width=True)
+        return group_a_selector, group_b_selector
+
+    # Always create the selectors (refresh button just triggers re-evaluation)
+    group_a_selector, group_b_selector = get_group_selectors()
+
+    # Reference the button to create reactivity (when clicked, cell re-runs)
+    btn_refresh_group_selector
+
+    group_a_name = mo.ui.text(value="Group A", label="Group A Name", placeholder="e.g., 'Baseline'")
+    group_b_name = mo.ui.text(value="Group B", label="Group B Name", placeholder="e.g., 'Optimized'")
+
+    btn_compare_groups = mo.ui.run_button(label="Compare Groups")
+
+    sort_cmp_by_time_switch = mo.ui.switch(label="Sort commits by avg time", value=False)
+
+    mo.vstack([
+        mo.md("### Compare Run Groups"),
+        mo.hstack([group_a_name, group_b_name], gap=2),
+        group_a_selector,
+        group_b_selector,
+        sort_cmp_by_time_switch,
+        btn_compare_groups,
+    ])
+    return (
+        btn_compare_groups,
+        group_a_name,
+        group_a_selector,
+        group_b_name,
+        group_b_selector,
+        sort_cmp_by_time_switch,
+    )
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    btn_refresh_group_selector = mo.ui.run_button(label="Refresh Benchmark Runs")
+    btn_refresh_group_selector
+    return (btn_refresh_group_selector,)
+
+
+@app.cell(hide_code=True)
+def _(
+    db_path_input,
+    group_a_name,
+    group_a_selector,
+    group_b_name,
+    group_b_selector,
+    mo,
+    pd,
+    plt,
+    sort_cmp_by_time_switch,
+    sqlite3,
+):
+    def load_group_data(db_path: str, run_ids: list[int]) -> pd.DataFrame:
+        """Load benchmark data for selected runs from the database."""
+        if not run_ids:
+            return pd.DataFrame()
+        conn = sqlite3.connect(db_path)
+        placeholders = ",".join("?" * len(run_ids))
+        query = f"""
+            SELECT 
+                r.benchmark_run_id,
+                br.name as run_name,
+                r.commit_hash,
+                c.commit_date,
+                c.commit_message,
+                r.time_ms
+            FROM runs r
+            JOIN benchmark_runs br ON r.benchmark_run_id = br.id
+            JOIN commits c ON r.commit_hash = c.commit_hash
+            WHERE r.benchmark_run_id IN ({placeholders})
+        """
+        df = pd.read_sql_query(query, conn, params=run_ids)
+        conn.close()
+        return df
+
+    def show_group_comparison():
+        group_a_ids = group_a_selector.value if group_a_selector.value else []
+        group_b_ids = group_b_selector.value if group_b_selector.value else []
+    
+        if not group_a_ids and not group_b_ids:
+            return mo.md("Select at least one run in either group to compare."), pd.DataFrame()
+    
+        df_a = load_group_data(db_path_input.value, group_a_ids)
+        df_b = load_group_data(db_path_input.value, group_b_ids)
+    
+        if df_a.empty and df_b.empty:
+            return mo.md("No data found for selected runs."), pd.DataFrame()
+    
+        # Compute average time per commit for each group
+        if not df_a.empty:
+            avg_a = df_a.groupby(["commit_hash", "commit_date", "commit_message"])["time_ms"].mean().reset_index()
+            avg_a["group"] = group_a_name.value or "Group A"
+        else:
+            avg_a = pd.DataFrame()
+    
+        if not df_b.empty:
+            avg_b = df_b.groupby(["commit_hash", "commit_date", "commit_message"])["time_ms"].mean().reset_index()
+            avg_b["group"] = group_b_name.value or "Group B"
+        else:
+            avg_b = pd.DataFrame()
+    
+        # Combine for plotting
+        combined = pd.concat([avg_a, avg_b], ignore_index=True)
+    
+        # Get all commits and sort them
+        all_commits = combined[["commit_hash", "commit_date", "commit_message"]].drop_duplicates()
+    
+        # Compute global average for sorting by time
+        global_avg = combined.groupby("commit_hash")["time_ms"].mean().reset_index()
+        global_avg.columns = ["commit_hash", "global_avg_time"]
+        all_commits = all_commits.merge(global_avg, on="commit_hash")
+    
+        if sort_cmp_by_time_switch.value:
+            all_commits = all_commits.sort_values("global_avg_time", ascending=False)
+        else:
+            all_commits = all_commits.sort_values("commit_date")
+    
+        all_commits = all_commits.reset_index(drop=True)
+        all_commits["x"] = all_commits.index
+    
+        # Create labels
+        if sort_cmp_by_time_switch.value:
+            all_commits["label"] = all_commits["commit_hash"].str[:8]
+        else:
+            all_commits["label"] = (
+                pd.to_datetime(all_commits["commit_date"].str[:10])
+                .dt.strftime("%m-%d")
+                + " "
+                + all_commits["commit_hash"].str[:8]
+            )
+    
+        # Merge x positions into combined data
+        combined = combined.merge(all_commits[["commit_hash", "x"]], on="commit_hash")
+    
+        # Plot
+        fig, ax = plt.subplots(figsize=(12, 6))
+    
+        for group_label in combined["group"].unique():
+            group_data = combined[combined["group"] == group_label].sort_values("x")
+            color = "blue" if group_label == (group_a_name.value or "Group A") else "red"
+            ax.plot(
+                group_data["x"],
+                group_data["time_ms"],
+                marker="o",
+                linestyle="-",
+                label=group_label,
+                color=color,
+                linewidth=2,
+            )
+    
+        ax.set_xticks(all_commits["x"])
+        ax.set_xticklabels(all_commits["label"], rotation=45, ha="right")
+        ax.set_xlabel("Commit (sorted by avg time)" if sort_cmp_by_time_switch.value else "Commit (chronological)")
+        ax.set_ylabel("Avg Time (ms)")
+        ax.set_title("Group Comparison: Average Execution Time per Commit")
+        ax.legend(loc="best")
+        ax.grid(axis="y", alpha=0.3)
+    
+        plt.tight_layout()
+    
+        # Build comparison table
+        comparison_table = all_commits[["commit_hash", "commit_date", "global_avg_time"]].copy()
+        comparison_table = comparison_table.rename(columns={
+            "commit_hash": "Commit Hash",
+            "commit_date": "Date",
+            "global_avg_time": "Overall Avg (ms)",
+        })
+        comparison_table["Overall Avg (ms)"] = comparison_table["Overall Avg (ms)"].round(3)
+    
+        return fig, comparison_table
+    return (show_group_comparison,)
+
+
+@app.cell(hide_code=True)
+def _(btn_compare_groups, mo, pd, show_group_comparison):
+    group_comparison_graph = mo.md("_Select runs for each group and click 'Compare Groups' to see the comparison plot._")
+    group_comparison_table_display = mo.md("")
+
+    if btn_compare_groups.value:
+        group_comparison_graph, comparison_table = show_group_comparison()
+        if isinstance(comparison_table, pd.DataFrame) and not comparison_table.empty:
+            group_comparison_table_display = mo.ui.table(comparison_table)
+
+    mo.vstack([
+        group_comparison_graph,
+        group_comparison_table_display,
     ])
     return
 
