@@ -1122,7 +1122,7 @@ def _(btn_refresh_benchmark_selector, db_path_input, get_benchmark_runs, mo):
         mo.md("### Select Benchmark Runs"),
         benchmark_run_selector
     ])
-    return benchmark_run_selector, stored_runs
+    return (benchmark_run_selector,)
 
 
 @app.cell(hide_code=True)
@@ -1754,73 +1754,58 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
-def _(db_path_input, mo, pd, sqlite3, stored_runs):
-    if stored_runs:
-        conn_info = sqlite3.connect(db_path_input.value)
-        df_runs_info = pd.read_sql_query("""
-            SELECT 
-                id as "Run ID",
-                name as "Name",
-                timestamp as "Timestamp",
-                compiler as "Compiler",
-                cflags as "CFLAGS",
-                repetitions as "Reps",
-                warmup as "Warmup"
-            FROM benchmark_runs
-            ORDER BY timestamp DESC
-        """, conn_info)
-        conn_info.close()
-        _show = True
-    else:
-        _show = False
-
-    mo.ui.table(df_runs_info) if _show else mo.md("_No benchmark runs stored yet._")
-    return
+@app.cell
+def _(mo):
+    btn_refresh_delete_selector = mo.ui.button(label="Refresh", kind="neutral")
+    return (btn_refresh_delete_selector,)
 
 
 @app.cell(hide_code=True)
-def _(btn_refresh_delete_selector, db_path_input, get_benchmark_runs, mo):
-    def get_delete_run_selector():
+def _(
+    btn_refresh_delete_selector,
+    db_path_input,
+    get_benchmark_runs,
+    mo,
+    pd,
+    sqlite3,
+):
+    def get_runs_table():
         stored_runs = get_benchmark_runs(db_path_input.value)
         if stored_runs:
-            run_options = {
-                f"#{r['id']}: {r['name']} ({r['timestamp'][:19].replace('T', ' ')})": r['id']
-                for r in stored_runs
-            }
-            selector = mo.ui.dropdown(
-                options=run_options,
-                label="Select Run to Delete",
-                value=None,
+            conn_info = sqlite3.connect(db_path_input.value)
+            df_runs_info = pd.read_sql_query("""
+                SELECT 
+                    id as "Run ID",
+                    name as "Name",
+                    timestamp as "Timestamp",
+                    compiler as "Compiler",
+                    cflags as "CFLAGS",
+                    repetitions as "Reps",
+                    warmup as "Warmup"
+                FROM benchmark_runs
+                ORDER BY timestamp DESC
+            """, conn_info)
+            conn_info.close()
+            table = mo.ui.table(
+                df_runs_info,
+                selection="multi",
             )
+            return table, True
         else:
-            selector = mo.ui.dropdown(
-                options={},
-                label="Select Run to Delete",
-                value=None,
-            )
-        return selector, stored_runs
-
-    # Always create the selector (refresh button just triggers re-evaluation)
-    delete_run_selector, _stored_runs_for_delete = get_delete_run_selector()
+            return None, False
 
     # Reference the button to create reactivity (when clicked, cell re-runs)
     btn_refresh_delete_selector
 
-    delete_run_button = mo.ui.run_button(label="Delete Run", kind="danger")
+    run_db_table, _has_runs = get_runs_table()
+
+    delete_run_button = mo.ui.run_button(label="Delete Selected", kind="danger")
 
     mo.vstack([
-        mo.md("### Delete Benchmark Run"),
-        mo.hstack([delete_run_selector, delete_run_button], justify="start", gap=2)
-    ])
-    return delete_run_button, delete_run_selector
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    btn_refresh_delete_selector = mo.ui.button(label="Refresh", kind="neutral")
-    btn_refresh_delete_selector
-    return (btn_refresh_delete_selector,)
+        run_db_table,
+        mo.hstack([delete_run_button, btn_refresh_delete_selector], justify="start", gap=2)
+    ]) if _has_runs else mo.md("_No benchmark runs stored yet._")
+    return delete_run_button, run_db_table
 
 
 @app.cell(hide_code=True)
@@ -1828,17 +1813,28 @@ def _(
     db_path_input,
     delete_benchmark_run,
     delete_run_button,
-    delete_run_selector,
     mo,
+    run_db_table,
 ):
     _delete_status = None
-    if delete_run_button is not None and delete_run_button.value and delete_run_selector is not None and delete_run_selector.value is not None:
-        _run_id = delete_run_selector.value
-        _success = delete_benchmark_run(db_path_input.value, _run_id)
-        if _success:
-            _delete_status = mo.md(f"✅ Deleted run #{_run_id}")
-        else:
-            _delete_status = mo.md(f"❌ Failed to delete run #{_run_id}")
+    if delete_run_button.value and run_db_table is not None and len(run_db_table.value) > 0:
+        _deleted_ids = []
+        _failed_ids = []
+        for _, row in run_db_table.value.iterrows():
+            _run_id = row["Run ID"]
+            _success = delete_benchmark_run(db_path_input.value, _run_id)
+            if _success:
+                _deleted_ids.append(_run_id)
+            else:
+                _failed_ids.append(_run_id)
+    
+        if _deleted_ids and not _failed_ids:
+            _delete_status = mo.md(f"✅ Deleted {len(_deleted_ids)} run(s): {', '.join(f'#{id}' for id in _deleted_ids)}")
+        elif _failed_ids and not _deleted_ids:
+            _delete_status = mo.md(f"❌ Failed to delete run(s): {', '.join(f'#{id}' for id in _failed_ids)}")
+        elif _deleted_ids and _failed_ids:
+            _delete_status = mo.md(f"⚠️ Deleted: {', '.join(f'#{id}' for id in _deleted_ids)} | Failed: {', '.join(f'#{id}' for id in _failed_ids)}")
+
     _delete_status if _delete_status else mo.md("")
     return
 
