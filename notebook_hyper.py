@@ -44,13 +44,6 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(mo):
-    run_extract = mo.ui.run_button(label="Extract commits")
-    run_extract
-    return (run_extract,)
-
-
-@app.cell(hide_code=True)
 def _(mo, subprocess):
     GITHUB_URL = "https://github.com/schicho/nonogram-solver/"
 
@@ -79,7 +72,7 @@ def _(mo, subprocess):
 
     branch_dropdown = mo.ui.dropdown(
         options=branches,
-        value=branches[0] if branches else "main",
+        value="develop" if branches else "main",
         label="Branch"
     )
     overwrite_switch = mo.ui.switch(label="Overwrite existing commits", value=False)
@@ -89,17 +82,29 @@ def _(mo, subprocess):
 
 
 @app.cell(hide_code=True)
+def _(mo):
+    extracted_commits_folder_input = mo.ui.text(
+        value="./download_extracted_commits",
+        label="Download Folder",
+        full_width=True,
+    )
+    extracted_commits_folder_input
+    return (extracted_commits_folder_input,)
+
+
+@app.cell(hide_code=True)
 def _(
     GITHUB_URL,
     Path,
     branch_dropdown,
+    extracted_commits_folder_input,
     mo,
     overwrite_switch,
     run_extract,
     subprocess,
     sys,
 ):
-    COMMIT_DIR = f"./extracted_commits"
+    COMMIT_DIR = extracted_commits_folder_input.value
 
     if run_extract.value:
         script = Path("./commit_extractor.py")
@@ -122,6 +127,21 @@ def _(
             print("----------------------------------------------------")
             print("STDERR:")
             print(result.stderr)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    run_extract = mo.ui.run_button(label="Extract commits")
+    run_extract
+    return (run_extract,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
     return
 
 
@@ -560,6 +580,14 @@ def _(json, subprocess):
     return (run_benchmark_batch,)
 
 
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
+    return
+
+
 @app.cell(hide_code=True)
 def _(
     IMPORTANT_COMMITS,
@@ -671,6 +699,14 @@ def _(commit_selector, mo):
     return
 
 
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
+    return
+
+
 @app.cell(hide_code=True)
 def _(Path, mo, parse_puzzle_filename, puzzles_folder_input):
     def get_available_puzzles():
@@ -755,18 +791,18 @@ def _(
     return (filtered_puzzles,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(mo):
-    mo.md("""
-    ## Run Benchmark
+    mo.md(r"""
+    ---
     """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""
-    ### Summary
+    mo.md("""
+    ## Run Benchmark
     """)
     return
 
@@ -1024,7 +1060,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## Results
+    ### Results
     """)
     return
 
@@ -1033,6 +1069,14 @@ def _(mo):
 def _(benchmark_results, mo, pd):
     df_benchmark_results = pd.DataFrame(benchmark_results)
     mo.ui.table(df_benchmark_results) if benchmark_results else mo.md("No benchmark results to display.")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
     return
 
 
@@ -1443,7 +1487,7 @@ def _(
     return (show_boxplot,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(btn_show_plots, mo, show_boxplot, show_graph):
     line_graph = mo.md("Currently no line graph to display. Press Show Plots to generate.")
     commit_table_display = mo.md("")
@@ -1460,6 +1504,14 @@ def _(btn_show_plots, mo, show_boxplot, show_graph):
         commit_table_display,
         boxplot
     ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
     return
 
 
@@ -1574,48 +1626,48 @@ def _(
     def show_group_comparison():
         group_a_ids = group_a_selector.value if group_a_selector.value else []
         group_b_ids = group_b_selector.value if group_b_selector.value else []
-    
+
         if not group_a_ids and not group_b_ids:
             return mo.md("Select at least one run in either group to compare."), pd.DataFrame()
-    
+
         df_a = load_group_data(db_path_input.value, group_a_ids)
         df_b = load_group_data(db_path_input.value, group_b_ids)
-    
+
         if df_a.empty and df_b.empty:
             return mo.md("No data found for selected runs."), pd.DataFrame()
-    
+
         # Compute average time per commit for each group
         if not df_a.empty:
             avg_a = df_a.groupby(["commit_hash", "commit_date", "commit_message"])["time_ms"].mean().reset_index()
             avg_a["group"] = group_a_name.value or "Group A"
         else:
             avg_a = pd.DataFrame()
-    
+
         if not df_b.empty:
             avg_b = df_b.groupby(["commit_hash", "commit_date", "commit_message"])["time_ms"].mean().reset_index()
             avg_b["group"] = group_b_name.value or "Group B"
         else:
             avg_b = pd.DataFrame()
-    
+
         # Combine for plotting
         combined = pd.concat([avg_a, avg_b], ignore_index=True)
-    
+
         # Get all commits and sort them
         all_commits = combined[["commit_hash", "commit_date", "commit_message"]].drop_duplicates()
-    
+
         # Compute global average for sorting by time
         global_avg = combined.groupby("commit_hash")["time_ms"].mean().reset_index()
         global_avg.columns = ["commit_hash", "global_avg_time"]
         all_commits = all_commits.merge(global_avg, on="commit_hash")
-    
+
         if sort_cmp_by_time_switch.value:
             all_commits = all_commits.sort_values("global_avg_time", ascending=False)
         else:
             all_commits = all_commits.sort_values("commit_date")
-    
+
         all_commits = all_commits.reset_index(drop=True)
         all_commits["x"] = all_commits.index
-    
+
         # Create labels
         if sort_cmp_by_time_switch.value:
             all_commits["label"] = all_commits["commit_hash"].str[:8]
@@ -1626,13 +1678,13 @@ def _(
                 + " "
                 + all_commits["commit_hash"].str[:8]
             )
-    
+
         # Merge x positions into combined data
         combined = combined.merge(all_commits[["commit_hash", "x"]], on="commit_hash")
-    
+
         # Plot
         fig, ax = plt.subplots(figsize=(12, 6))
-    
+
         for group_label in combined["group"].unique():
             group_data = combined[combined["group"] == group_label].sort_values("x")
             color = "blue" if group_label == (group_a_name.value or "Group A") else "red"
@@ -1645,7 +1697,7 @@ def _(
                 color=color,
                 linewidth=2,
             )
-    
+
         ax.set_xticks(all_commits["x"])
         ax.set_xticklabels(all_commits["label"], rotation=45, ha="right")
         ax.set_xlabel("Commit (sorted by avg time)" if sort_cmp_by_time_switch.value else "Commit (chronological)")
@@ -1653,9 +1705,9 @@ def _(
         ax.set_title("Group Comparison: Average Execution Time per Commit")
         ax.legend(loc="best")
         ax.grid(axis="y", alpha=0.3)
-    
+
         plt.tight_layout()
-    
+
         # Build comparison table
         comparison_table = all_commits[["commit_hash", "commit_date", "global_avg_time"]].copy()
         comparison_table = comparison_table.rename(columns={
@@ -1664,7 +1716,7 @@ def _(
             "global_avg_time": "Overall Avg (ms)",
         })
         comparison_table["Overall Avg (ms)"] = comparison_table["Overall Avg (ms)"].round(3)
-    
+
         return fig, comparison_table
     return (show_group_comparison,)
 
@@ -1683,6 +1735,14 @@ def _(btn_compare_groups, mo, pd, show_group_comparison):
         group_comparison_graph,
         group_comparison_table_display,
     ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
     return
 
 
@@ -1720,28 +1780,47 @@ def _(db_path_input, mo, pd, sqlite3, stored_runs):
 
 
 @app.cell(hide_code=True)
-def _(db_path_input, get_benchmark_runs, mo):
-    _stored_runs_for_delete = get_benchmark_runs(db_path_input.value)
+def _(btn_refresh_delete_selector, db_path_input, get_benchmark_runs, mo):
+    def get_delete_run_selector():
+        stored_runs = get_benchmark_runs(db_path_input.value)
+        if stored_runs:
+            run_options = {
+                f"#{r['id']}: {r['name']} ({r['timestamp'][:19].replace('T', ' ')})": r['id']
+                for r in stored_runs
+            }
+            selector = mo.ui.dropdown(
+                options=run_options,
+                label="Select Run to Delete",
+                value=None,
+            )
+        else:
+            selector = mo.ui.dropdown(
+                options={},
+                label="Select Run to Delete",
+                value=None,
+            )
+        return selector, stored_runs
 
-    if _stored_runs_for_delete:
-        delete_run_options = {
-            f"#{r['id']}: {r['name']} ({r['timestamp'][:19].replace('T', ' ')})": r['id']
-            for r in _stored_runs_for_delete
-        }
-        delete_run_selector = mo.ui.dropdown(
-            options=delete_run_options,
-            label="Select Run to Delete",
-            value=None,
-        )
-        delete_run_button = mo.ui.run_button(label="Delete Run", kind="danger")
-        _show = True
-    else:
-        delete_run_selector = None
-        delete_run_button = None
-        _show = False
+    # Always create the selector (refresh button just triggers re-evaluation)
+    delete_run_selector, _stored_runs_for_delete = get_delete_run_selector()
 
-    mo.hstack([delete_run_selector, delete_run_button], justify="start", gap=2) if _show else mo.md("")
+    # Reference the button to create reactivity (when clicked, cell re-runs)
+    btn_refresh_delete_selector
+
+    delete_run_button = mo.ui.run_button(label="Delete Run", kind="danger")
+
+    mo.vstack([
+        mo.md("### Delete Benchmark Run"),
+        mo.hstack([delete_run_selector, delete_run_button], justify="start", gap=2)
+    ])
     return delete_run_button, delete_run_selector
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    btn_refresh_delete_selector = mo.ui.button(label="Refresh", kind="neutral")
+    btn_refresh_delete_selector
+    return (btn_refresh_delete_selector,)
 
 
 @app.cell(hide_code=True)
@@ -1761,6 +1840,14 @@ def _(
         else:
             _delete_status = mo.md(f"❌ Failed to delete run #{_run_id}")
     _delete_status if _delete_status else mo.md("")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    """)
     return
 
 
